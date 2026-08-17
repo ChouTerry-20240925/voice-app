@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const http = require('http');
 const { WebSocketServer } = require('ws');
+const { bridgeClientToGemini } = require('./geminiLive');
 
 const PORT = process.env.PORT || 8080;
 
@@ -17,15 +18,40 @@ const httpServer = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 
-wss.on('connection', (clientSocket) => {
+wss.on('connection', async (clientSocket) => {
   console.log('client connected');
 
+  let geminiSession;
+  try {
+    geminiSession = await bridgeClientToGemini(clientSocket);
+  } catch (err) {
+    console.error('failed to connect to gemini live api:', err.message);
+    clientSocket.close();
+    return;
+  }
+
   clientSocket.on('message', (data) => {
-    console.log('received message from client, bytes:', data.length);
+    let message;
+    try {
+      message = JSON.parse(data.toString());
+    } catch (err) {
+      console.error('invalid message from client:', err.message);
+      return;
+    }
+
+    if (message.type === 'audio' && message.data) {
+      geminiSession.sendRealtimeInput({
+        audio: {
+          data: message.data,
+          mimeType: message.mimeType || 'audio/pcm;rate=16000',
+        },
+      });
+    }
   });
 
   clientSocket.on('close', () => {
     console.log('client disconnected');
+    geminiSession.close();
   });
 
   clientSocket.on('error', (err) => {
