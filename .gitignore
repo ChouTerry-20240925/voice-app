@@ -1,0 +1,30 @@
+# 環境變數 / 金鑰
+.env
+.env.*
+!.env.example
+
+# Flutter / Dart
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.packages
+frontend/build/
+frontend/android/.gradle/
+frontend/android/local.properties
+frontend/ios/Pods/
+frontend/ios/.symlinks/
+frontend/ios/Flutter/Flutter.framework
+frontend/ios/Flutter/Flutter.podspec
+frontend/*.iml
+frontend/.idea/
+
+# Node.js
+backend/node_modules/
+backend/npm-debug.log*
+backend/dist/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
