@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'screens/report_history_screen.dart';
+
 void main() {
   runApp(const VoiceBsrsApp());
 }
@@ -43,7 +45,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _selectQaMode() {}
 
-  void _openReportHistory() {}
+  void _openReportHistory() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ReportHistoryScreen()),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
