@@ -10,7 +10,7 @@
 | 後端 | Node.js（`backend/`），部署於 Render Free Tier（Singapore） |
 | 音訊播放 | `flutter_sound`（已安裝於 frontend） |
 | 錄音 | `record` 套件（已安裝於 frontend） |
-| 本地資料庫 | `hive`（尚未安裝，Phase 4 要用） |
+| 本地資料庫 | `hive` + `hive_flutter`（已安裝於 frontend，手寫 `TypeAdapter`，未用 `hive_generator`/`build_runner`） |
 | Gemini SDK | 官方 `@google/genai`（已安裝於 backend） |
 | Gemini Live 模型 | `gemini-2.5-flash-native-audio-latest`（注意：說明書原寫的 `gemini-2.0-flash-live-001` 和 SDK 範例的 `gemini-live-2.5-flash-preview` 都不可用，是實測目前金鑰能用的模型清單後選定的） |
 
@@ -41,9 +41,9 @@
   - [x] Step 4：測試語音延遲、Barge-in（打斷）機制、VAD 靜音容忍度（1.5~2 秒不要太敏感）
     - Barge-in 的 client 端機制（backend 轉發 `serverContent.interrupted`、前端立刻停止播放並丟棄舊音訊）已完成並驗證正常，停止動作約 10ms 內完成
     - **已知待觀察項**：使用者打斷後，Gemini 重新生成新回覆＋語音合成大約要等 3 秒左右，這段是模型端本身的延遲，前端/backend 目前無法縮短，之後如果覺得太久可能要重新檢視 prompt/連線設定
-    - `backend/src/geminiLive.js` 的 `realtimeInputConfig.automaticActivityDetection.silenceDurationMs: 1750` 已部署到 Render 並實機驗證，思考停頓不會太容易被誤判打斷
+    - `backend/src/geminiLive.js` 的 `realtimeInputConfig.automaticActivityDetection.silenceDurationMs` 一開始設 1750，已部署並實機驗證思考停頓不會太容易被誤判打斷。**後續（Phase 4 測試階段）發現這個值調太保守**：查證 Gemini Live API 官方文件後，伺服器內部預設約 800ms、建議範圍 500~800ms，1750ms 遠超出建議範圍，是造成使用者反應「回覆等很久（甚至忍不住問還在嗎）」的主因之一，已調整為建議範圍內的 650ms（見 Phase 4 記錄）
   - [x] checkpoint：實機測試一次完整語音來回
-- [ ] **Phase 4：Prompt 設計與報表持久化** ← 接下來從這裡開始
+- [x] **Phase 4：Prompt 設計與報表持久化**
   - [x] Step 1：撰寫 BSRS-5 訪談模式 System Prompt + `generate_report` tool schema，已寫進 `backend/src/geminiLive.js`（`INTERVIEW_SYSTEM_PROMPT`＋`GENERATE_REPORT_TOOL`，用 `Type.OBJECT`/`Type.STRING`/`Type.INTEGER` 而非說明書原文的字串寫法）。內容決策（**非正式醫療專業審閱**，正式使用前建議請心理衛生背景的人再看過措辭）：
     - 第 6 題（自殺意念）用婉轉問法、避開「自殺」字面；偵測到高風險時溫和提醒安心專線 1925，仍完成流程並呼叫 `generate_report`
     - 整個訪談改成「默默進行」：System Prompt 明確要求不要照題號念、不要提到「量表/測驗/檢測」等字眼，讓 6 個面向融入自然聊天中蒐集
@@ -60,9 +60,18 @@
     - **已知限制**：新產生的報表目前只會導到報表詳情頁顯示，**不會**出現在「歷史報表」清單（`report_history_screen.dart` 還是讀 `buildFakeReportRecords()` 假資料），要等 Step 4 接上 `hive` 才會真正持久化並出現在清單裡
     - **重要教訓（連線強制關閉問題，已修復並實機驗證）**：實測發現連線會在對話進行到「第二輪」左右（不是在 generate_report 附近）就被 API 強制關閉，錯誤是 `The audio content type (CONTENT_TYPE_AUDIO) is not supported for this model configuration`。從 log 追出真正原因：Gemini 這個模型預設會產生 thinking（內部推理）的文字內容（`{"text":"...","thought":true}`），但我們的 `responseModalities` 只允許 `AUDIO`，兩者疑似衝突導致模型接續產生語音時崩潰。修法：加上 `thinkingConfig: { thinkingBudget: 0 }` 關閉 thinking（對即時語音對話本來就不需要，還能降低延遲）。**已部署到 Render 並實機驗證通過**：對話能撐到最後、`generate_report` 正確觸發、連線乾淨結束
     - **重要教訓（報表彈窗跳出太快）**：原本收到 `tool_call` 就立刻掛斷/跳轉，但 System Prompt 要求模型呼叫 `generate_report` 前會先講一句道別語音，導致道別還沒播完畫面就跳走。修法：收到 `tool_call` 先記住報表資料、不掛斷；`AudioPlaybackService` 新增 `waitUntilIdle()`（等佇列音訊真正播完，不只是「收到」），等 `turn_complete` 且播放完畢後才結束通話，彈出「對話已完成」對話框讓使用者點「查看報表詳情」才導頁；另外加了 `onDisconnected` 保險，避免連線意外斷掉、`turn_complete` 沒送到時卡住。已實機驗證
-  - [ ] Step 4：`hive` 串接，把報表 JSON + 備註改成真正寫入本地資料庫（目前 `frontend/lib/screens/report_detail_screen.dart` 的備註只存在 State 記憶體裡，重開 App 會消失）
-  - checkpoint：完整跑一次「開始問答→BSRS-5 對話→產生報表→寫入本地→查看歷史紀錄」流程
-- [ ] **Phase 5：收尾**
+  - [x] Step 4：`hive` 串接，把報表 JSON + 備註改成真正寫入本地資料庫
+    - `frontend/lib/models/report_record.dart` 加上手寫 `ReportRecordAdapter`（`TypeAdapter<ReportRecord>`），沒用 `hive_generator`/`build_runner`——欄位少又穩定，手寫比較省事
+    - 新增 `frontend/lib/services/report_store.dart` 包住 Hive box 存取（`init()`/`getAll()`/`save()`）；`main()` 改成 async，先 `await ReportStore.init()` 再 `runApp()`
+    - `main.dart` 的 `_handleToolCall` 收到 `tool_call` 就立刻 `ReportStore.save()` 寫入（不等彈窗流程跑完，避免中途出狀況遺失資料）；`report_detail_screen.dart` 儲存備註時同步寫回
+    - `report_history_screen.dart` 改讀 `ReportStore.getAll()`，刪除不再使用的 `frontend/lib/data/fake_reports.dart`
+    - 已實機驗證完整流程（開始問答→對話→產生報表→查看歷史紀錄，重開 App 資料還在）
+  - **回覆延遲排查**（Step 4 測試後使用者反應「說完話常常要等很久」，甚至會等到忍不住問「還在嗎」）：
+    - 一開始想用 `serverContent.inputTranscription`（先開啟 `inputAudioTranscription: {}`）的時間戳記，拆解「使用者講多久」vs「Gemini 判斷+生成花多久」。**結果不可行**：官方文件明講 inputTranscription 不保證跟其他事件的時間順序，實測也真的看到轉錄內容出現在 `tool_call`/`turn_complete` 之後，但使用者其實是在那之前講的話。**已把這個診斷用設定關掉**（順便省掉 Gemini 那邊多跑一份語音轉文字的負擔）
+    - 查證 Gemini Live API 官方文件（`https://ai.google.dev/gemini-api/docs/live-api/capabilities`）：`silenceDurationMs` 伺服器內部預設約 800ms、建議範圍 500~800ms。我們原本設的 1750ms 遠超出這個範圍，是延遲感的主因之一，已調整為建議範圍內的 650ms（見 Phase 3 Step 4 記錄）。**尚未實機驗證新數值下思考停頓會不會又太容易被誤判打斷**，之後要留意
+    - 順便發現並修正一個真的的 bug：`voice_session_service.dart` 的 WebSocket `onError` 原本完全沒 log；`main.dart` 的 `onDisconnected` 原本只有在「報表已產生、等收尾」的情境才會處理，**連線在報表產生前就意外斷掉時畫面會卡住**（`_isCallActive` 沒重置、沒有任何提示），已修正成不管有沒有待處理的報表都會正確收尾並提示「連線中斷，請重新開始通話」，也補上 WebSocket 錯誤的 log，方便下次真的斷線時排查根因
+  - checkpoint：完整跑一次「開始問答→BSRS-5 對話→產生報表→寫入本地→查看歷史紀錄」流程，已實機驗證通過
+- [ ] **Phase 5：收尾** ← 接下來從這裡開始
   - [ ] 錯誤處理（斷線重連、麥克風權限被拒等邊界情況）
   - [ ] 實機/多裝置驗收
 

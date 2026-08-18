@@ -106,11 +106,6 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
         silenceDurationMs: 650,
       },
     },
-    // 純粹拿來對時間軸用的診斷用途：開啟後 log 裡會多一筆使用者語音的文字
-    // 轉錄（serverContent.inputTranscription），出現時間大致對應 Gemini
-    // 判定「使用者講完了」的時刻，方便之後拆解「使用者講多久」跟「Gemini
-    // 判斷+生成花多久」——不影響對話行為本身。
-    inputAudioTranscription: {},
   };
   // QA 模式是自由問答衛教，不蒐集固定題項也不產生報表，所以不掛
   // generate_report 這個 tool。
