@@ -40,9 +40,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _isCallActive = false;
   AvatarState _avatarState = AvatarState.idle;
-  // Only interview mode has a real backend prompt so far (QA mode is
-  // Phase 4 Step 2); defaults to interview if the user never taps a mode
-  // button, so "開始問答" keeps working standalone like before.
+  // Defaults to interview if the user never taps a mode button, so "開始
+  // 問答" keeps working standalone like before.
   ConversationMode _selectedMode = ConversationMode.interview;
   final _playback = AudioPlaybackService();
   late final _voiceSession = VoiceSessionService(
@@ -87,7 +86,9 @@ class _HomeScreenState extends State<HomeScreen> {
       // Start the mic/WebSocket session before opening the player: if mic
       // permission is denied or the connection fails, there's no point
       // spinning up playback for audio that will never arrive.
-      await _voiceSession.start();
+      await _voiceSession.start(
+        mode: _selectedMode == ConversationMode.qa ? 'qa' : 'interview',
+      );
       await _playback.start();
       setState(() {
         _isCallActive = true;
@@ -155,9 +156,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _selectQaMode() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('專業問答模式尚未開放')),
-    );
+    setState(() {
+      _selectedMode = ConversationMode.qa;
+    });
   }
 
   void _openReportHistory() {
@@ -193,7 +194,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _ModeButton(
                           icon: Icons.chat_bubble_outline,
                           label: '專業問答模式',
-                          selected: false,
+                          selected: _selectedMode == ConversationMode.qa,
                           onPressed: _selectQaMode,
                         ),
                         const Spacer(),

@@ -18,12 +18,15 @@ const httpServer = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 
-wss.on('connection', async (clientSocket) => {
+wss.on('connection', async (clientSocket, request) => {
   console.log('client connected');
+
+  const { searchParams } = new URL(request.url, 'http://localhost');
+  const mode = searchParams.get('mode') === 'qa' ? 'qa' : 'interview';
 
   let geminiSession;
   try {
-    geminiSession = await bridgeClientToGemini(clientSocket);
+    geminiSession = await bridgeClientToGemini(clientSocket, mode);
   } catch (err) {
     console.error('failed to connect to gemini live api:', err.message);
     clientSocket.close();

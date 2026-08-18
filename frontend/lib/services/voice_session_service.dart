@@ -36,12 +36,17 @@ class VoiceSessionService {
   StreamSubscription<Uint8List>? _audioSub;
   StreamSubscription? _channelSub;
 
-  Future<void> start() async {
+  /// [mode] selects which backend system-prompt config to use for this
+  /// session — `'interview'` (default) or `'qa'`.
+  Future<void> start({String mode = 'interview'}) async {
     if (!await _recorder.hasPermission()) {
       throw StateError('麥克風權限被拒絕');
     }
 
-    _channel = WebSocketChannel.connect(Uri.parse(kBackendWsUrl));
+    final uri = Uri.parse(kBackendWsUrl).replace(
+      queryParameters: {'mode': mode},
+    );
+    _channel = WebSocketChannel.connect(uri);
     _channelSub = _channel!.stream.listen(
       _handleIncomingMessage,
       onError: (_) {},

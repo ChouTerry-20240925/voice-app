@@ -37,6 +37,19 @@ report_content 需嚴格依照以下格式（每行一題，回答內容用你�
 total_score 為六題分數加總。
 result_analysis 請根據總分自然描述情緒困擾程度與建議（分數僅供參考，非正式醫療診斷）。`;
 
+const QA_SYSTEM_PROMPT = `你是一位溫暖、專業的心理健康衛教語音助理，以自由問答的方式陪伴使用者聊心理相關的困擾與疑問。
+
+【你的角色】
+- 使用自然、口語化的繁體中文，用同理、不批判的態度回應使用者的提問或分享。
+- 使用者想聊什麼心理相關的主題都可以自然展開，不用侷限在固定範圍。
+- 你提供的是衛教資訊與陪伴，不是醫療診斷。若使用者的問題涉及具體的醫療診斷、藥物使用建議，或明顯超出一般衛教範圍，溫和說明你無法取代專業評估，並建議諮詢精神科醫師、心理師或撥打相關求助專線。
+- 若使用者表達出具體、立即的自傷或危險意念，除了同理之外，也要溫和提醒可以撥打安心專線 1925 或尋求緊急協助。
+
+【對話規則】
+- 這個模式不需要蒐集固定題項、不打分數，也不會產生報表，單純自然對話即可。
+- 等使用者先開口提問或分享，你再回應；不用主動開場問候。
+- 回覆簡潔口語、避免生硬的醫療術語，必要時可以用生活化的比喻說明。`;
+
 const GENERATE_REPORT_TOOL = {
   functionDeclarations: [
     {
@@ -62,8 +75,9 @@ function createGenAIClient() {
   return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 }
 
-async function bridgeClientToGemini(clientSocket) {
+async function bridgeClientToGemini(clientSocket, mode = 'interview') {
   const ai = createGenAIClient();
+  const isInterview = mode !== 'qa';
 
   // Declared before connect() (not `const session = await ...`) so the
   // onmessage callback's closure can reference it — by the time any real
@@ -71,26 +85,32 @@ async function bridgeClientToGemini(clientSocket) {
   // sent), this will already be assigned.
   let session;
 
-  session = await ai.live.connect({
-    model: MODEL_NAME,
-    config: {
-      responseModalities: [Modality.AUDIO],
-      systemInstruction: INTERVIEW_SYSTEM_PROMPT,
-      tools: [GENERATE_REPORT_TOOL],
-      // Thinking output is text ("thought" parts), which seems to be
-      // incompatible with an audio-only responseModalities config — the
-      // session errored out and force-closed right after emitting one.
-      // We don't need chain-of-thought for a conversational voice
-      // assistant anyway, and skipping it also cuts response latency.
-      thinkingConfig: { thinkingBudget: 0 },
-      realtimeInputConfig: {
-        automaticActivityDetection: {
-          // 心理諮商對談中常有停頓思考，容忍度設在說明書建議的 1.5~2 秒
-          // 區間高位，避免使用者話講到一半就被判定為講完了。
-          silenceDurationMs: 1750,
-        },
+  const config = {
+    responseModalities: [Modality.AUDIO],
+    systemInstruction: isInterview ? INTERVIEW_SYSTEM_PROMPT : QA_SYSTEM_PROMPT,
+    // Thinking output is text ("thought" parts), which seems to be
+    // incompatible with an audio-only responseModalities config — the
+    // session errored out and force-closed right after emitting one.
+    // We don't need chain-of-thought for a conversational voice
+    // assistant anyway, and skipping it also cuts response latency.
+    thinkingConfig: { thinkingBudget: 0 },
+    realtimeInputConfig: {
+      automaticActivityDetection: {
+        // 心理諮商對談中常有停頓思考，容忍度設在說明書建議的 1.5~2 秒
+        // 區間高位，避免使用者話講到一半就被判定為講完了。
+        silenceDurationMs: 1750,
       },
     },
+  };
+  // QA 模式是自由問答衛教，不蒐集固定題項也不產生報表，所以不掛
+  // generate_report 這個 tool。
+  if (isInterview) {
+    config.tools = [GENERATE_REPORT_TOOL];
+  }
+
+  session = await ai.live.connect({
+    model: MODEL_NAME,
+    config,
     callbacks: {
       onopen: () => {
         console.log('gemini live session opened');
@@ -118,16 +138,19 @@ async function bridgeClientToGemini(clientSocket) {
   // seeds a minimal synthetic turn — framed as a system event, not
   // something the user actually said — to give the model something
   // concrete to react to.
-  console.log('sending opening nudge to gemini');
-  session.sendClientContent({
-    turns: [
-      {
-        role: 'user',
-        parts: [{ text: '[系統事件：語音通話剛連線，使用者尚未發言，請依照你的開場指示主動開口]' }],
-      },
-    ],
-    turnComplete: true,
-  });
+  // QA 模式改為被動等待使用者先開口，不送這個 nudge。
+  if (isInterview) {
+    console.log('sending opening nudge to gemini');
+    session.sendClientContent({
+      turns: [
+        {
+          role: 'user',
+          parts: [{ text: '[系統事件：語音通話剛連線，使用者尚未發言，請依照你的開場指示主動開口]' }],
+        },
+      ],
+      turnComplete: true,
+    });
+  }
 
   return session;
 }
