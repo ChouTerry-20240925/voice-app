@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'models/report_record.dart';
@@ -26,7 +28,7 @@ class VoiceBsrsApp extends StatelessWidget {
   }
 }
 
-enum AvatarState { idle, listening, speaking }
+enum AvatarState { idle, listening, thinking, speaking }
 
 enum ConversationMode { interview, qa }
 
@@ -43,6 +45,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // Defaults to interview if the user never taps a mode button, so "開始
   // 問答" keeps working standalone like before.
   ConversationMode _selectedMode = ConversationMode.interview;
+  // Set by _handleToolCall once generate_report fires; the call keeps
+  // running until the model's closing remark actually finishes (see
+  // onTurnComplete below) so it isn't cut off mid-sentence.
+  ReportRecord? _pendingReport;
   final _playback = AudioPlaybackService();
   late final _voiceSession = VoiceSessionService(
     onAudioChunk: (data, mimeType) {
@@ -53,8 +59,36 @@ class _HomeScreenState extends State<HomeScreen> {
       _playback.interrupt();
       _setAvatarState(AvatarState.listening);
     },
-    onTurnComplete: () => _setAvatarState(AvatarState.listening),
+    onTurnComplete: () {
+      _setAvatarState(AvatarState.listening);
+      if (_pendingReport != null) {
+        _finishInterview();
+      }
+    },
     onToolCall: (functionCalls) => _handleToolCall(functionCalls),
+    // Safety net: if the connection drops before turn_complete ever
+    // arrives, don't leave the user stuck on a call that looks live but
+    // isn't — finish up the same way, just without waiting on playback
+    // that's never coming.
+    onDisconnected: () {
+      if (_pendingReport != null) {
+        _finishInterview();
+      }
+    },
+    // Local mic-amplitude heuristic only (see VoiceSessionService) — guard
+    // against the authoritative server states (speaking/idle) so a noisy
+    // reading can't override them; true barge-in still goes through
+    // onInterrupted above.
+    onUserPaused: () {
+      if (_avatarState == AvatarState.listening) {
+        _setAvatarState(AvatarState.thinking);
+      }
+    },
+    onUserSpeaking: () {
+      if (_avatarState == AvatarState.thinking) {
+        _setAvatarState(AvatarState.listening);
+      }
+    },
   );
 
   void _setAvatarState(AvatarState state) {
@@ -108,7 +142,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _handleToolCall(List<dynamic> functionCalls) async {
+  void _handleToolCall(List<dynamic> functionCalls) {
     final call = functionCalls
         .whereType<Map>()
         .cast<Map<dynamic, dynamic>>()
@@ -126,16 +160,28 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final record = ReportRecord(
+    // Don't end the call yet — per the system prompt, Gemini still says a
+    // closing line after calling generate_report. onTurnComplete finishes
+    // things once that's actually done playing.
+    _pendingReport = ReportRecord(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       createdAt: DateTime.now(),
       reportContent: reportContent,
       totalScore: totalScore.toInt(),
       resultAnalysis: resultAnalysis,
     );
+  }
 
-    // The model's job is done once it calls generate_report — end the
-    // call the same way pressing "結束通話" would.
+  Future<void> _finishInterview() async {
+    final record = _pendingReport;
+    if (record == null) return;
+    _pendingReport = null;
+
+    // Audio for the closing remark may still be queued/playing even though
+    // every message for it has already arrived — wait for it to actually
+    // finish rather than cutting it off.
+    await _playback.waitUntilIdle();
+
     await _voiceSession.stop();
     await _playback.stop();
     if (!mounted) return;
@@ -144,6 +190,24 @@ class _HomeScreenState extends State<HomeScreen> {
       _avatarState = AvatarState.idle;
     });
 
+    // No local persistence yet (that's Phase 4 Step 4 / hive) — this
+    // in-memory record is the only copy, so the dialog only offers the one
+    // way forward rather than a dismiss that would silently lose it.
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('對話已完成'),
+        content: const Text('已產生本次對話的報表。'),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('查看報表詳情'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => ReportDetailScreen(record: record)),
     );
@@ -258,6 +322,7 @@ class _AvatarViewState extends State<_AvatarView>
   static Duration _durationFor(AvatarState state) => switch (state) {
         AvatarState.idle => const Duration(milliseconds: 1800),
         AvatarState.listening => const Duration(milliseconds: 1100),
+        AvatarState.thinking => const Duration(milliseconds: 1000),
         AvatarState.speaking => const Duration(milliseconds: 320),
       };
 
@@ -275,16 +340,21 @@ class _AvatarViewState extends State<_AvatarView>
     }
   }
 
-  // Idle stays perfectly still; the other two states loop a back-and-forth
-  // gesture, faster while speaking to read as "talking" rather than "idly
-  // swaying".
+  // Idle stays perfectly still. Listening/speaking loop a back-and-forth
+  // gesture (faster while speaking, to read as "talking" rather than "idly
+  // swaying"). Thinking instead sweeps 0→1 one-way on repeat, so the dot
+  // indicator it drives pulses in one direction instead of ping-ponging.
   void _syncAnimation(AvatarState state) {
     _controller.duration = _durationFor(state);
-    if (state == AvatarState.idle) {
-      _controller.stop();
-      _controller.value = 0;
-    } else {
-      _controller.repeat(reverse: true);
+    switch (state) {
+      case AvatarState.idle:
+        _controller.stop();
+        _controller.value = 0;
+      case AvatarState.thinking:
+        _controller.repeat();
+      case AvatarState.listening:
+      case AvatarState.speaking:
+        _controller.repeat(reverse: true);
     }
   }
 
@@ -305,6 +375,10 @@ class _AvatarViewState extends State<_AvatarView>
       AvatarState.listening => (
           colorScheme.tertiaryContainer,
           colorScheme.onTertiaryContainer,
+        ),
+      AvatarState.thinking => (
+          colorScheme.surfaceContainerHighest,
+          colorScheme.onSurfaceVariant,
         ),
       AvatarState.speaking => (
           colorScheme.secondaryContainer,
@@ -373,6 +447,9 @@ class _StickFigurePainter extends CustomPainter {
     canvas.drawLine(shoulder, rightHand, linePaint);
 
     _paintMouth(canvas, head);
+    if (state == AvatarState.thinking) {
+      _paintThinkingDots(canvas, head, headRadius);
+    }
   }
 
   (Offset, Offset) _handPositions(Offset shoulder) {
@@ -388,6 +465,13 @@ class _StickFigurePainter extends CustomPainter {
         return (
           shoulder + const Offset(-28, 46),
           shoulder + Offset(26, -30 - 6 * t),
+        );
+      case AvatarState.thinking:
+        // Left arm relaxed; right hand rests near the chin, still — the
+        // dot indicator above the head is what signals "processing".
+        return (
+          shoulder + const Offset(-28, 46),
+          shoulder + const Offset(24, -8),
         );
       case AvatarState.speaking:
         // Both hands swing outward and up together, like talking with
@@ -417,6 +501,20 @@ class _StickFigurePainter extends CustomPainter {
           ..strokeWidth = 3
           ..strokeCap = StrokeCap.round,
       );
+    }
+  }
+
+  /// Three dots above the head, pulsing in sequence as [t] sweeps 0→1 on
+  /// repeat — a lightweight "..." typing-indicator cue for "still thinking".
+  void _paintThinkingDots(Canvas canvas, Offset head, double headRadius) {
+    final dotPaint = Paint()..style = PaintingStyle.fill;
+    final baseY = head.dy - headRadius - 22;
+
+    for (var i = 0; i < 3; i++) {
+      final phase = (t + i * 0.33) % 1.0;
+      final glow = 0.5 + 0.5 * math.sin(2 * math.pi * phase);
+      dotPaint.color = color.withValues(alpha: 0.25 + 0.65 * glow);
+      canvas.drawCircle(Offset(head.dx - 16 + i * 16, baseY), 5, dotPaint);
     }
   }
 

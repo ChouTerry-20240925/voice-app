@@ -148,6 +148,22 @@ class AudioPlaybackService {
     }
   }
 
+  /// Waits until audio queued so far has actually finished playing out —
+  /// not just been fed to the player, which [enqueueChunk] returns well
+  /// before. Callers that need to know "is the model truly done talking"
+  /// (e.g. before ending the call once a report is ready) should await
+  /// this rather than assuming the chain future alone means playback caught
+  /// up.
+  Future<void> waitUntilIdle() async {
+    await _chain;
+    final anchor = _playbackAnchor;
+    if (anchor == null) return;
+    final remaining = _queuedDuration - DateTime.now().difference(anchor);
+    if (remaining > Duration.zero) {
+      await Future.delayed(remaining);
+    }
+  }
+
   Future<void> stop() async {
     if (!_isOpen) return;
     _isOpen = false;
