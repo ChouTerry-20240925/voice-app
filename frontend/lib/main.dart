@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'screens/report_history_screen.dart';
+import 'services/audio_playback_service.dart';
+import 'services/voice_session_service.dart';
 
 void main() {
   runApp(const VoiceBsrsApp());
@@ -34,11 +36,46 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _isCallActive = false;
   final AvatarState _avatarState = AvatarState.idle;
+  final _playback = AudioPlaybackService();
+  late final _voiceSession = VoiceSessionService(
+    onAudioChunk: (data, mimeType) => _playback.playChunk(data, mimeType),
+    onInterrupted: () => _playback.stopCurrentPlayback(),
+  );
 
-  void _toggleCall() {
-    setState(() {
-      _isCallActive = !_isCallActive;
-    });
+  @override
+  void dispose() {
+    _voiceSession.dispose();
+    _playback.stop();
+    super.dispose();
+  }
+
+  Future<void> _toggleCall() async {
+    if (_isCallActive) {
+      await _voiceSession.stop();
+      await _playback.stop();
+      setState(() {
+        _isCallActive = false;
+      });
+      return;
+    }
+
+    try {
+      // Start the mic/WebSocket session before opening the player: if mic
+      // permission is denied or the connection fails, there's no point
+      // spinning up playback for audio that will never arrive.
+      await _voiceSession.start();
+      await _playback.start();
+      setState(() {
+        _isCallActive = true;
+      });
+    } catch (e) {
+      await _voiceSession.stop();
+      await _playback.stop();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('無法開始通話：$e')),
+      );
+    }
   }
 
   void _selectInterviewMode() {}

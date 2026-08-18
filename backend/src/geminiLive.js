@@ -54,6 +54,10 @@ function forwardGeminiMessageToClient(message, clientSocket) {
     }
   }
 
+  if (message.serverContent?.interrupted) {
+    clientSocket.send(JSON.stringify({ type: 'interrupted' }));
+  }
+
   if (message.serverContent?.turnComplete) {
     clientSocket.send(JSON.stringify({ type: 'turn_complete' }));
   }
