@@ -2,8 +2,6 @@
 
 全語音互動的心理健康引導介面。使用者透過語音與虛擬人物（Avatar）即時對談，App 內建「訪談模式」（依 BSRS-5 簡式健康量表，透過自然聊天悄悄蒐集六個面向的資訊）與「專業問答模式」（自由心理衛生衛教問答）。訪談結束後由 Gemini 自動產出結構化報表，寫入本機資料庫，供使用者日後查閱、加註備註。
 
-> 開發進度與詳細技術決策記錄在 [`TODO.md`](./TODO.md)；原始需求規格書在 [`語音對話心理評估APP開發說明書.md`](./語音對話心理評估APP開發說明書.md)。
-
 ## 功能現況
 
 - **訪談模式**：Gemini 依 System Prompt 主動開場問候，透過自然對話（不提及「量表」「測驗」等字眼）蒐集睡眠困難、焦慮不安、易怒情緒、低落沮喪、自信心低落、負面念頭六個面向，完成後自動呼叫 `generate_report` 工具產出報表並結束通話
@@ -59,8 +57,6 @@ NTUH/
 │   └── src/
 │       ├── server.js                HTTP + WebSocket Server
 │       └── geminiLive.js            Gemini Live 連線、System Prompt、tool schema
-├── TODO.md                         開發進度與技術決策記錄（含教訓/踩雷紀錄）
-└── 語音對話心理評估APP開發說明書.md   原始需求規格書
 ```
 
 ## 快速開始
@@ -107,6 +103,10 @@ flutter test             # 執行測試
 - **無真正的斷線重連**：Gemini Live session 的對話狀態存在 session 內，連線意外中斷後只能重新開始一段新對話，無法接續原本的訪談進度（除非日後導入 Gemini 的 session resumption 機制）
 - **多裝置驗收未完成**：目前主要在單一 Android 裝置上實機驗證，iOS 僅確認權限宣告已補齊，未實際測試過
 - **非正式醫療審閱**：訪談模式與報表的 BSRS-5 相關措辭僅供開發參考，正式上線前建議請具心理衛生背景的人員審閱
+
+## 未來發展
+
+- **喜怒哀樂表情的語意判斷**：延伸現有的 tool-calling 架構（`generate_report` 已驗證過在 `AUDIO` 回覆模式下能穩定夾帶 tool_call），在 System Prompt 加一個輕量工具（例如 `update_emotion(emotion)`），請 Gemini 每輪根據語意判斷後主動呼叫，backend 轉發給前端驅動 Avatar 表情。這樣語意判斷由 Gemini 在既有的對話理解中順便產出，不需額外呼叫模型，也能避開先前開啟 `inputAudioTranscription` 時遇到的時序錯亂問題；取捨是多一個工具呼叫，模型未必每輪都即時或穩定呼叫，需要靠 prompt 調教，且要留意避免重蹈先前 thinking/多模態輸出衝突導致連線被強制關閉的教訓
 
 ## 授權
 
