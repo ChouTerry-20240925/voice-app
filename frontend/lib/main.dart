@@ -26,6 +26,8 @@ class VoiceBsrsApp extends StatelessWidget {
 
 enum AvatarState { idle, listening, speaking }
 
+enum ConversationMode { interview, qa }
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -36,6 +38,10 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _isCallActive = false;
   AvatarState _avatarState = AvatarState.idle;
+  // Only interview mode has a real backend prompt so far (QA mode is
+  // Phase 4 Step 2); defaults to interview if the user never taps a mode
+  // button, so "開始問答" keeps working standalone like before.
+  ConversationMode _selectedMode = ConversationMode.interview;
   final _playback = AudioPlaybackService();
   late final _voiceSession = VoiceSessionService(
     onAudioChunk: (data, mimeType) {
@@ -98,9 +104,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _selectInterviewMode() {}
+  void _selectInterviewMode() {
+    setState(() {
+      _selectedMode = ConversationMode.interview;
+    });
+  }
 
-  void _selectQaMode() {}
+  void _selectQaMode() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('專業問答模式尚未開放')),
+    );
+  }
 
   void _openReportHistory() {
     Navigator.of(context).push(
@@ -128,18 +142,21 @@ class _HomeScreenState extends State<HomeScreen> {
                         _ModeButton(
                           icon: Icons.psychology_alt_outlined,
                           label: '訪談模式',
+                          selected: _selectedMode == ConversationMode.interview,
                           onPressed: _selectInterviewMode,
                         ),
                         const SizedBox(height: 24),
                         _ModeButton(
                           icon: Icons.chat_bubble_outline,
                           label: '專業問答模式',
+                          selected: false,
                           onPressed: _selectQaMode,
                         ),
                         const Spacer(),
                         _ModeButton(
                           icon: Icons.description_outlined,
                           label: '報表輸出',
+                          selected: false,
                           onPressed: _openReportHistory,
                         ),
                       ],
@@ -370,21 +387,22 @@ class _ModeButton extends StatelessWidget {
   const _ModeButton({
     required this.icon,
     required this.label,
+    required this.selected,
     required this.onPressed,
   });
 
   final IconData icon;
   final String label;
+  final bool selected;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        IconButton.filledTonal(
-          onPressed: onPressed,
-          icon: Icon(icon),
-        ),
+        selected
+            ? IconButton.filled(onPressed: onPressed, icon: Icon(icon))
+            : IconButton.filledTonal(onPressed: onPressed, icon: Icon(icon)),
         const SizedBox(height: 4),
         SizedBox(
           width: 72,

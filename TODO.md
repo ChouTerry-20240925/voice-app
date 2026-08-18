@@ -43,7 +43,12 @@
     - `backend/src/geminiLive.js` 的 `realtimeInputConfig.automaticActivityDetection.silenceDurationMs: 1750` 已部署到 Render 並實機驗證，思考停頓不會太容易被誤判打斷
   - [x] checkpoint：實機測試一次完整語音來回
 - [ ] **Phase 4：Prompt 設計與報表持久化** ← 接下來從這裡開始
-  - [x] Step 1：撰寫 BSRS-5 訪談模式 System Prompt + `generate_report` tool schema，已寫進 `backend/src/geminiLive.js`（`INTERVIEW_SYSTEM_PROMPT`＋`GENERATE_REPORT_TOOL`，用 `Type.OBJECT`/`Type.STRING`/`Type.INTEGER` 而非說明書原文的字串寫法）。內容決策：第 6 題（自殺意念）用婉轉問法、避開「自殺」字面；偵測到高風險時溫和提醒安心專線 1925，仍完成流程並呼叫 `generate_report`——這兩點是跟使用者確認過的，**非正式醫療專業審閱**，正式使用前建議請心理衛生背景的人再看過措辭。**目前固定套用此 prompt**（尚未依 Step 2 的模式選擇做分流），**尚未部署到 Render 實測**，之後要驗證 Gemini 是否真的照 6 題順序問、結尾有正確呼叫 generate_report
+  - [x] Step 1：撰寫 BSRS-5 訪談模式 System Prompt + `generate_report` tool schema，已寫進 `backend/src/geminiLive.js`（`INTERVIEW_SYSTEM_PROMPT`＋`GENERATE_REPORT_TOOL`，用 `Type.OBJECT`/`Type.STRING`/`Type.INTEGER` 而非說明書原文的字串寫法）。內容決策（**非正式醫療專業審閱**，正式使用前建議請心理衛生背景的人再看過措辭）：
+    - 第 6 題（自殺意念）用婉轉問法、避開「自殺」字面；偵測到高風險時溫和提醒安心專線 1925，仍完成流程並呼叫 `generate_report`
+    - 整個訪談改成「默默進行」：System Prompt 明確要求不要照題號念、不要提到「量表/測驗/檢測」等字眼，讓 6 個面向融入自然聊天中蒐集
+    - 連線建立後會呼叫 `session.sendClientContent({ turnComplete: true })` 主動觸發 Gemini 開口，讓它照 System Prompt 的【開場】指示先問候（例如「你最近心情怎麼樣？」），不用等使用者先講話
+    - `frontend/lib/main.dart` 新增 `ConversationMode` 選取狀態：「訪談模式」按鈕現在會真的被選取（有視覺反饋），「專業問答模式」按下去會提示尚未開放。**目前沒選模式時「開始問答」預設走訪談模式**，前端還沒有把選取的模式傳給 backend（因為 backend 目前也只有訪談模式這一種設定），這條線要等 Step 2 專業問答模式做出來後再一起接上
+    - **尚未部署到 Render 實測**，之後要驗證：Gemini 開場是否真的主動先問候、後續對話是否感覺自然不像做問卷、結尾有沒有正確呼叫 generate_report
   - [ ] Step 2：撰寫專業問答模式 System Prompt
   - [ ] Step 3：前端接收 `tool_call`（backend 已會轉發 `{"type":"tool_call","functionCalls":[...]}`）後自動斷線、解析 `report_content`/`total_score`/`result_analysis` 並渲染到報表頁
   - [ ] Step 4：`hive` 串接，把報表 JSON + 備註改成真正寫入本地資料庫（目前 `frontend/lib/screens/report_detail_screen.dart` 的備註只存在 State 記憶體裡，重開 App 會消失）
