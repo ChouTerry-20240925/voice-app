@@ -34,10 +34,11 @@ class VoiceBsrsApp extends StatelessWidget {
 
 enum AvatarState { idle, listening, thinking, speaking }
 
-/// Purely decorative — not tied to any detected sentiment (Gemini gives us
-/// no such signal). idle/listening/thinking all stay neutral; only each new
-/// speaking turn advances through the cycle below, just to keep the
-/// character feeling alive while it talks.
+/// Rendered by _StickFigurePainter (eyebrows + mouth curve), but every
+/// state currently resolves to [neutral] — see _HomeScreenState's
+/// _currentExpression. Kept as its own type so a real trigger (e.g.
+/// sentiment/semantic analysis of the reply) can drive it later without
+/// touching the painter.
 enum AvatarExpression { neutral, joy, anger, sorrow, happy }
 
 enum ConversationMode { interview, qa }
@@ -110,34 +111,15 @@ class _HomeScreenState extends State<HomeScreen> {
     },
   );
 
-  static const _speakingExpressionCycle = [
-    AvatarExpression.joy,
-    AvatarExpression.anger,
-    AvatarExpression.sorrow,
-    AvatarExpression.happy,
-  ];
-  int _speakingTurnCount = 0;
-
-  AvatarExpression get _currentExpression {
-    switch (_avatarState) {
-      case AvatarState.idle:
-      case AvatarState.listening:
-        return AvatarExpression.neutral;
-      case AvatarState.thinking:
-        return AvatarExpression.neutral;
-      case AvatarState.speaking:
-        return _speakingExpressionCycle[
-            _speakingTurnCount % _speakingExpressionCycle.length];
-    }
-  }
+  // Cycling through 喜/怒/哀/樂 by rule (e.g. one per speaking turn) was
+  // tried and pulled back out — without knowing what's actually being said,
+  // the expression shown has no real relationship to it, which read as
+  // wrong more often than it read as lively. Stays neutral until there's a
+  // real signal (e.g. semantic/sentiment analysis of the reply) to drive it.
+  AvatarExpression get _currentExpression => AvatarExpression.neutral;
 
   void _setAvatarState(AvatarState state) {
     if (_avatarState == state) return;
-    // Advance the expression cycle once per new speaking turn (not every
-    // rebuild while it's already speaking).
-    if (state == AvatarState.speaking && _avatarState != AvatarState.speaking) {
-      _speakingTurnCount++;
-    }
     setState(() {
       _avatarState = state;
     });
