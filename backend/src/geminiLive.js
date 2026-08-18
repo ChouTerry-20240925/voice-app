@@ -77,6 +77,12 @@ async function bridgeClientToGemini(clientSocket) {
       responseModalities: [Modality.AUDIO],
       systemInstruction: INTERVIEW_SYSTEM_PROMPT,
       tools: [GENERATE_REPORT_TOOL],
+      // Thinking output is text ("thought" parts), which seems to be
+      // incompatible with an audio-only responseModalities config — the
+      // session errored out and force-closed right after emitting one.
+      // We don't need chain-of-thought for a conversational voice
+      // assistant anyway, and skipping it also cuts response latency.
+      thinkingConfig: { thinkingBudget: 0 },
       realtimeInputConfig: {
         automaticActivityDetection: {
           // 心理諮商對談中常有停頓思考，容忍度設在說明書建議的 1.5~2 秒

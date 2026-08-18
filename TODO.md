@@ -52,9 +52,10 @@
   - [ ] Step 2：撰寫專業問答模式 System Prompt
   - [x] Step 3：前端接收 `tool_call` 後自動斷線、解析 `report_content`/`total_score`/`result_analysis` 並渲染到報表頁
     - `frontend/lib/services/voice_session_service.dart` 新增 `onToolCall`，`main.dart` 的 `_handleToolCall` 解析 `generate_report` 的 args、建立 `ReportRecord`、結束通話、導到 `ReportDetailScreen`
-    - **重要教訓**：Gemini 呼叫完 `generate_report` 後，backend 如果沒有回應這個 function call（`session.sendToolResponse(...)`），Gemini API 會在模型嘗試接續動作時報錯並強制關閉連線（`The audio content type (CONTENT_TYPE_AUDIO) is not supported for this model configuration`），不是乾淨的結束。`geminiLive.js` 現在會在轉發 `tool_call` 給前端的同時，也呼叫 `session.sendToolResponse(...)` 回一個簡單的 ack
+    - `geminiLive.js` 現在會在轉發 `tool_call` 給前端的同時，也呼叫 `session.sendToolResponse(...)` 回一個簡單的 ack，避免 Gemini 呼叫完 `generate_report` 後等不到回應
     - **已知限制**：新產生的報表目前只會導到報表詳情頁顯示，**不會**出現在「歷史報表」清單（`report_history_screen.dart` 還是讀 `buildFakeReportRecords()` 假資料），要等 Step 4 接上 `hive` 才會真正持久化並出現在清單裡
-    - **尚未部署到 Render 實測**，之後要驗證：完整跑完訪談後，`generate_report` 有沒有正確觸發、報表頁內容是否正確、連線是否乾淨結束（不再出現強制關閉的錯誤 log）
+    - **重要教訓（連線強制關閉問題）**：實測發現連線會在對話進行到「第二輪」左右（不是在 generate_report 附近）就被 API 強制關閉，錯誤是 `The audio content type (CONTENT_TYPE_AUDIO) is not supported for this model configuration`。從 log 追出真正原因：Gemini 這個模型預設會產生 thinking（內部推理）的文字內容（`{"text":"...","thought":true}`），但我們的 `responseModalities` 只允許 `AUDIO`，兩者疑似衝突導致模型接續產生語音時崩潰。修法：加上 `thinkingConfig: { thinkingBudget: 0 }` 關閉 thinking（對即時語音對話本來就不需要，還能降低延遲）。`session.sendToolResponse` 那個修法本身沒錯，只是不是這次連線關閉的真正主因
+    - **尚未部署到 Render 實測**，之後要驗證：關閉 thinking 後對話是否能撐到最後、`generate_report` 有沒有正確觸發、報表頁內容是否正確、連線是否乾淨結束
   - [ ] Step 4：`hive` 串接，把報表 JSON + 備註改成真正寫入本地資料庫（目前 `frontend/lib/screens/report_detail_screen.dart` 的備註只存在 State 記憶體裡，重開 App 會消失）
   - checkpoint：完整跑一次「開始問答→BSRS-5 對話→產生報表→寫入本地→查看歷史紀錄」流程
 - [ ] **Phase 5：收尾**
