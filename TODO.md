@@ -74,7 +74,12 @@
     - 順便發現並修正一個真的的 bug：`voice_session_service.dart` 的 WebSocket `onError` 原本完全沒 log；`main.dart` 的 `onDisconnected` 原本只有在「報表已產生、等收尾」的情境才會處理，**連線在報表產生前就意外斷掉時畫面會卡住**（`_isCallActive` 沒重置、沒有任何提示），已修正成不管有沒有待處理的報表都會正確收尾並提示「連線中斷，請重新開始通話」，也補上 WebSocket 錯誤的 log，方便下次真的斷線時排查根因
   - checkpoint：完整跑一次「開始問答→BSRS-5 對話→產生報表→寫入本地→查看歷史紀錄」流程，已實機驗證通過
 - [ ] **Phase 5：收尾** ← 接下來從這裡開始
-  - [ ] 錯誤處理（斷線重連、麥克風權限被拒等邊界情況）
+  - [x] 錯誤處理（斷線重連、麥克風權限被拒等邊界情況）
+    - 麥克風權限被拒：`voice_session_service.dart` 的 `start()` 一開始就檢查，拒絕會拋例外並顯示「無法開始通話」，有測試涵蓋（`test/widget_test.dart`）
+    - 連線意外斷開（報表產生前）：`onDisconnected` 會正確收尾（停止通話、重置畫面）並提示「連線中斷，請重新開始通話」，不會卡住
+    - 連線中缺乏回饋：`start()` 改成真的 `await channel.ready`，按鈕會顯示連線中動畫，超過 5 秒還沒連上會提示「後端可能正在喚醒中」（對應 Render 冷啟動）
+    - **刻意不做的部分**：真正的「斷線重連接續對話」（session resumption）——Gemini Live 的對話狀態存在 session 裡，斷線後重連只能開全新對話，沒辦法接續訪談進度，除非另外實作 Gemini 的 session resumption 機制，評估後決定先不做，改成乾淨失敗+提示重新開始
+    - 已確認 Android（`RECORD_AUDIO`/`INTERNET`）、iOS（`NSMicrophoneUsageDescription`）權限宣告都已在 Phase 1 Step 1 補齊
   - [ ] 實機/多裝置驗收
 
 ## 重要提醒
