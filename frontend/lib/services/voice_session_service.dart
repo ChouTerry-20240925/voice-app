@@ -85,6 +85,17 @@ class VoiceSessionService {
     );
     _stopping = false;
     _channel = WebSocketChannel.connect(uri);
+    try {
+      // WebSocketChannel.connect() returns immediately without waiting for
+      // the connection to actually succeed — without this, a connection
+      // failure (or the backend's Render free-tier cold start, 30-50s) was
+      // invisible: the call would already look "active" with nothing ever
+      // arriving.
+      await _channel!.ready;
+    } catch (_) {
+      _channel = null;
+      rethrow;
+    }
     _channelSub = _channel!.stream.listen(
       _handleIncomingMessage,
       onDone: () {

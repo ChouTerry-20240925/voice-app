@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -44,6 +45,12 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _isCallActive = false;
+  bool _isConnecting = false;
+  // Only shown once connecting has taken a while — Render's free tier can
+  // take 30-50s to wake from idle, and popping this up immediately would
+  // make every ordinary fast connect look like something's wrong.
+  bool _showColdStartHint = false;
+  Timer? _coldStartHintTimer;
   AvatarState _avatarState = AvatarState.idle;
   // Defaults to interview if the user never taps a mode button, so "開始
   // 問答" keeps working standalone like before.
@@ -106,6 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _coldStartHintTimer?.cancel();
     _voiceSession.dispose();
     _playback.stop();
     super.dispose();
@@ -122,6 +130,18 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    setState(() {
+      _isConnecting = true;
+      _showColdStartHint = false;
+    });
+    // Render's free tier can take 30-50s to wake from idle — only mention
+    // that once the connection has actually taken a while, so a normal
+    // fast connect never shows it.
+    _coldStartHintTimer = Timer(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      setState(() => _showColdStartHint = true);
+    });
+
     try {
       // Start the mic/WebSocket session before opening the player: if mic
       // permission is denied or the connection fails, there's no point
@@ -130,7 +150,10 @@ class _HomeScreenState extends State<HomeScreen> {
         mode: _selectedMode == ConversationMode.qa ? 'qa' : 'interview',
       );
       await _playback.start();
+      _coldStartHintTimer?.cancel();
+      if (!mounted) return;
       setState(() {
+        _isConnecting = false;
         _isCallActive = true;
         // The model greets first, but audio hasn't arrived yet — this
         // flips to speaking the moment the first chunk comes in.
@@ -139,9 +162,14 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       // _avatarState never left idle if we get here — start() failed
       // before the success branch's setState ran.
+      _coldStartHintTimer?.cancel();
       await _voiceSession.stop();
       await _playback.stop();
       if (!mounted) return;
+      setState(() {
+        _isConnecting = false;
+        _showColdStartHint = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('無法開始通話：$e')),
       );
@@ -300,24 +328,47 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 32),
-              child: SizedBox(
-                width: 200,
-                height: 64,
-                child: ElevatedButton(
-                  onPressed: _toggleCall,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _isCallActive ? Colors.redAccent : Colors.teal,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(32),
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Column(
+                children: [
+                  if (_isConnecting && _showColdStartHint)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        '後端可能正在喚醒中，請稍候（最長約 50 秒）',
+                        style: TextStyle(fontSize: 13, color: Colors.grey),
+                      ),
+                    ),
+                  SizedBox(
+                    width: 200,
+                    height: 64,
+                    child: ElevatedButton(
+                      onPressed: _isConnecting ? null : _toggleCall,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _isCallActive
+                            ? Colors.redAccent
+                            : Colors.teal,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(32),
+                        ),
+                      ),
+                      child: _isConnecting
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 3,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Text(
+                              _isCallActive ? '結束通話' : '開始問答',
+                              style: const TextStyle(fontSize: 18),
+                            ),
                     ),
                   ),
-                  child: Text(
-                    _isCallActive ? '結束通話' : '開始問答',
-                    style: const TextStyle(fontSize: 18),
-                  ),
-                ),
+                ],
               ),
             ),
           ],
