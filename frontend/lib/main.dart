@@ -34,6 +34,12 @@ class VoiceBsrsApp extends StatelessWidget {
 
 enum AvatarState { idle, listening, thinking, speaking }
 
+/// Purely decorative — not tied to any detected sentiment (Gemini gives us
+/// no such signal). idle/listening/thinking all stay neutral; only each new
+/// speaking turn advances through the cycle below, just to keep the
+/// character feeling alive while it talks.
+enum AvatarExpression { neutral, joy, anger, sorrow, happy }
+
 enum ConversationMode { interview, qa }
 
 class HomeScreen extends StatefulWidget {
@@ -104,8 +110,34 @@ class _HomeScreenState extends State<HomeScreen> {
     },
   );
 
+  static const _speakingExpressionCycle = [
+    AvatarExpression.joy,
+    AvatarExpression.anger,
+    AvatarExpression.sorrow,
+    AvatarExpression.happy,
+  ];
+  int _speakingTurnCount = 0;
+
+  AvatarExpression get _currentExpression {
+    switch (_avatarState) {
+      case AvatarState.idle:
+      case AvatarState.listening:
+        return AvatarExpression.neutral;
+      case AvatarState.thinking:
+        return AvatarExpression.neutral;
+      case AvatarState.speaking:
+        return _speakingExpressionCycle[
+            _speakingTurnCount % _speakingExpressionCycle.length];
+    }
+  }
+
   void _setAvatarState(AvatarState state) {
     if (_avatarState == state) return;
+    // Advance the expression cycle once per new speaking turn (not every
+    // rebuild while it's already speaking).
+    if (state == AvatarState.speaking && _avatarState != AvatarState.speaking) {
+      _speakingTurnCount++;
+    }
     setState(() {
       _avatarState = state;
     });
@@ -293,7 +325,12 @@ class _HomeScreenState extends State<HomeScreen> {
             Expanded(
               child: Stack(
                 children: [
-                  Center(child: _AvatarView(state: _avatarState)),
+                  Center(
+                    child: _AvatarView(
+                      state: _avatarState,
+                      expression: _currentExpression,
+                    ),
+                  ),
                   Positioned(
                     right: 16,
                     top: 0,
@@ -379,9 +416,10 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _AvatarView extends StatefulWidget {
-  const _AvatarView({required this.state});
+  const _AvatarView({required this.state, required this.expression});
 
   final AvatarState state;
+  final AvatarExpression expression;
 
   @override
   State<_AvatarView> createState() => _AvatarViewState();
@@ -474,6 +512,7 @@ class _AvatarViewState extends State<_AvatarView>
             size: const Size(220, 220),
             painter: _StickFigurePainter(
               state: widget.state,
+              expression: widget.expression,
               t: _curve.value,
               color: fg,
             ),
@@ -487,15 +526,19 @@ class _AvatarViewState extends State<_AvatarView>
 /// Draws a simple stick figure whose pose reflects [state]: still for idle,
 /// a hand cupped near the ear for listening, both hands gesturing outward
 /// with an open/closing mouth for speaking. [t] oscillates 0→1→0 and drives
-/// whichever motion the current state uses.
+/// whichever motion the current state uses. [expression] (喜/怒/哀/樂 plus
+/// neutral) drives the eyebrows and mouth curve — purely decorative, not
+/// tied to any real detected sentiment.
 class _StickFigurePainter extends CustomPainter {
   _StickFigurePainter({
     required this.state,
+    required this.expression,
     required this.t,
     required this.color,
   });
 
   final AvatarState state;
+  final AvatarExpression expression;
   final double t;
   final Color color;
 
@@ -522,9 +565,55 @@ class _StickFigurePainter extends CustomPainter {
     canvas.drawLine(shoulder, leftHand, linePaint);
     canvas.drawLine(shoulder, rightHand, linePaint);
 
+    _paintEyes(canvas, head);
+    _paintEyebrows(canvas, head);
     _paintMouth(canvas, head);
     if (state == AvatarState.thinking) {
       _paintThinkingDots(canvas, head, headRadius);
+    }
+  }
+
+  void _paintEyes(Canvas canvas, Offset head) {
+    final eyePaint = Paint()..color = color;
+    canvas.drawCircle(head + const Offset(-10, -4), 2.5, eyePaint);
+    canvas.drawCircle(head + const Offset(10, -4), 2.5, eyePaint);
+  }
+
+  /// Two short lines above the eyes. Angle encodes the emotion: a
+  /// downward-pointing "V" (inner end low) reads as angry/furrowed; the
+  /// opposite (inner end high) reads as sorrowful/concerned; raised outer
+  /// ends read as bright/cheerful; flat is neutral.
+  void _paintEyebrows(Canvas canvas, Offset head) {
+    final browPaint = Paint()
+      ..color = color
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    final leftEye = head + const Offset(-10, -4);
+    final rightEye = head + const Offset(10, -4);
+
+    void drawPair(Offset leftInner, Offset leftOuter) {
+      canvas.drawLine(leftEye + leftOuter, leftEye + leftInner, browPaint);
+      // Mirror horizontally for the right brow.
+      canvas.drawLine(
+        rightEye + Offset(-leftOuter.dx, leftOuter.dy),
+        rightEye + Offset(-leftInner.dx, leftInner.dy),
+        browPaint,
+      );
+    }
+
+    switch (expression) {
+      case AvatarExpression.neutral:
+        drawPair(const Offset(6, -8), const Offset(-6, -8));
+      case AvatarExpression.anger:
+        // Inner end low, outer end high — furrowed glare.
+        drawPair(const Offset(6, -4), const Offset(-6, -12));
+      case AvatarExpression.sorrow:
+        // Inner end high, outer end low — concerned/pleading.
+        drawPair(const Offset(6, -12), const Offset(-6, -4));
+      case AvatarExpression.joy:
+      case AvatarExpression.happy:
+        // Outer end raised — bright, relaxed.
+        drawPair(const Offset(6, -9), const Offset(-6, -13));
     }
   }
 
@@ -559,6 +648,25 @@ class _StickFigurePainter extends CustomPainter {
     }
   }
 
+  // Positive bulges the middle of the closed-mouth curve downward, which
+  // reads as a smile (corners relatively raised); negative reads as a
+  // frown/press. See _paintMouth's use of it as a quadratic Bezier control
+  // point offset.
+  double get _mouthCurveOffset {
+    switch (expression) {
+      case AvatarExpression.neutral:
+        return 0;
+      case AvatarExpression.anger:
+        return -2;
+      case AvatarExpression.sorrow:
+        return -6;
+      case AvatarExpression.joy:
+        return 7;
+      case AvatarExpression.happy:
+        return 4;
+    }
+  }
+
   void _paintMouth(Canvas canvas, Offset head) {
     final mouthCenter = head + const Offset(0, 10);
 
@@ -568,16 +676,26 @@ class _StickFigurePainter extends CustomPainter {
         Rect.fromCenter(center: mouthCenter, width: 16, height: openness),
         Paint()..color = color,
       );
-    } else {
-      canvas.drawLine(
-        mouthCenter - const Offset(8, 0),
-        mouthCenter + const Offset(8, 0),
-        Paint()
-          ..color = color
-          ..strokeWidth = 3
-          ..strokeCap = StrokeCap.round,
-      );
+      return;
     }
+
+    final curve = _mouthCurveOffset;
+    final path = Path()
+      ..moveTo(mouthCenter.dx - 8, mouthCenter.dy)
+      ..quadraticBezierTo(
+        mouthCenter.dx,
+        mouthCenter.dy + curve,
+        mouthCenter.dx + 8,
+        mouthCenter.dy,
+      );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke,
+    );
   }
 
   /// Three dots above the head, pulsing in sequence as [t] sweeps 0→1 on
@@ -597,6 +715,7 @@ class _StickFigurePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _StickFigurePainter oldDelegate) {
     return oldDelegate.state != state ||
+        oldDelegate.expression != expression ||
         oldDelegate.t != t ||
         oldDelegate.color != color;
   }
