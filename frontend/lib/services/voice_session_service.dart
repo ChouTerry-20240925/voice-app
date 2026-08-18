@@ -12,13 +12,16 @@ const String kBackendWsUrl = 'wss://voice-bsrs-backend.onrender.com';
 ///
 /// Incoming `{"type":"audio",...}` messages are decoded and handed to
 /// [onAudioChunk]; `{"type":"interrupted"}` (the model was barged in on)
-/// is handed to [onInterrupted]. `turn_complete`/`tool_call` are not
-/// handled yet — that's Phase 4.
+/// is handed to [onInterrupted]. Both callbacks must return promptly
+/// (queue/signal and return) rather than waiting for audio to actually
+/// finish playing — otherwise a slow 'audio' handler would delay this
+/// listener from ever seeing the 'interrupted' message that follows it.
+/// `turn_complete`/`tool_call` are not handled yet — that's Phase 4.
 class VoiceSessionService {
   VoiceSessionService({this.onAudioChunk, this.onInterrupted});
 
-  final Future<void> Function(Uint8List data, String mimeType)? onAudioChunk;
-  final Future<void> Function()? onInterrupted;
+  final void Function(Uint8List data, String mimeType)? onAudioChunk;
+  final void Function()? onInterrupted;
 
   final AudioRecorder _recorder = AudioRecorder();
   WebSocketChannel? _channel;
@@ -32,12 +35,7 @@ class VoiceSessionService {
 
     _channel = WebSocketChannel.connect(Uri.parse(kBackendWsUrl));
     _channelSub = _channel!.stream.listen(
-      // Pause delivery of the next message until this one (including
-      // handing its audio off to the player) is fully processed, so
-      // concurrent chunks never race on the native audio track.
-      (raw) {
-        _channelSub?.pause(_handleIncomingMessage(raw));
-      },
+      _handleIncomingMessage,
       onError: (_) {},
     );
 
@@ -46,6 +44,12 @@ class VoiceSessionService {
         encoder: AudioEncoder.pcm16bits,
         sampleRate: 16000,
         numChannels: 1,
+        // Without this, the phone's own speaker output leaks back into
+        // the mic and Gemini's VAD mistakes it for the user barging in,
+        // causing the model to repeatedly self-interrupt mid-sentence.
+        echoCancel: true,
+        autoGain: true,
+        noiseSuppress: true,
       ),
     );
 
@@ -58,7 +62,7 @@ class VoiceSessionService {
     });
   }
 
-  Future<void> _handleIncomingMessage(dynamic raw) async {
+  void _handleIncomingMessage(dynamic raw) {
     if (raw is! String) return;
     final message = jsonDecode(raw);
     if (message is! Map) return;
@@ -68,9 +72,9 @@ class VoiceSessionService {
         final data = message['data'];
         final mimeType = message['mimeType'];
         if (data is! String || mimeType is! String) return;
-        await onAudioChunk?.call(base64Decode(data), mimeType);
+        onAudioChunk?.call(base64Decode(data), mimeType);
       case 'interrupted':
-        await onInterrupted?.call();
+        onInterrupted?.call();
     }
   }
 

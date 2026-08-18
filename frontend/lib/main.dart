@@ -38,8 +38,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final AvatarState _avatarState = AvatarState.idle;
   final _playback = AudioPlaybackService();
   late final _voiceSession = VoiceSessionService(
-    onAudioChunk: (data, mimeType) => _playback.playChunk(data, mimeType),
-    onInterrupted: () => _playback.stopCurrentPlayback(),
+    onAudioChunk: (data, mimeType) => _playback.enqueueChunk(data, mimeType),
+    onInterrupted: () => _playback.interrupt(),
   );
 
   @override
