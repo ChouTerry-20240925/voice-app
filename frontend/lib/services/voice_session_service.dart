@@ -59,11 +59,14 @@ class VoiceSessionService {
   // these thresholds may still need retuning.
   static const double _speechThresholdDb = -30.0;
   static const double _silenceThresholdDb = -40.0;
-  // Close to the backend's own silenceDurationMs (1750ms, see
-  // geminiLive.js) so the thinking animation roughly tracks when Gemini
-  // itself decides the user's turn ended, rather than firing on every
-  // ordinary mid-sentence pause.
-  static const Duration _pauseDelay = Duration(milliseconds: 1500);
+  // Deliberately much shorter than the backend's own silenceDurationMs
+  // (650ms, see geminiLive.js): this isn't trying to predict the exact
+  // moment Gemini decides the turn is over, it's reassurance — Gemini's
+  // reply can genuinely take several seconds, and without this the app
+  // just goes quiet, which reads as frozen/crashed. Showing "thinking"
+  // fast (even if it sometimes fires on an ordinary mid-sentence pause,
+  // self-corrects via onUserSpeaking) beats a silent screen.
+  static const Duration _pauseDelay = Duration(milliseconds: 400);
 
   final AudioRecorder _recorder = AudioRecorder();
   WebSocketChannel? _channel;
