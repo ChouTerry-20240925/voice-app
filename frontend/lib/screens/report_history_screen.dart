@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../data/fake_reports.dart';
 import '../models/report_record.dart';
+import '../services/report_store.dart';
 import 'report_detail_screen.dart';
 
 class ReportHistoryScreen extends StatefulWidget {
@@ -17,8 +17,7 @@ class _ReportHistoryScreenState extends State<ReportHistoryScreen> {
   @override
   void initState() {
     super.initState();
-    _records = buildFakeReportRecords()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    _records = ReportStore.getAll();
   }
 
   @override

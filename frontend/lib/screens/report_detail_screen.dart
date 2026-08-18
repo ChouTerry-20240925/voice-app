@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/report_record.dart';
+import '../services/report_store.dart';
 
 class ReportDetailScreen extends StatefulWidget {
   const ReportDetailScreen({super.key, required this.record});
@@ -26,10 +27,12 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
     super.dispose();
   }
 
-  void _saveNote() {
+  Future<void> _saveNote() async {
     setState(() {
       widget.record.note = _noteController.text;
     });
+    await ReportStore.save(widget.record);
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('備註已儲存')),
     );

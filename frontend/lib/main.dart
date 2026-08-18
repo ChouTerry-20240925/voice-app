@@ -6,9 +6,12 @@ import 'models/report_record.dart';
 import 'screens/report_detail_screen.dart';
 import 'screens/report_history_screen.dart';
 import 'services/audio_playback_service.dart';
+import 'services/report_store.dart';
 import 'services/voice_session_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await ReportStore.init();
   runApp(const VoiceBsrsApp());
 }
 
@@ -142,7 +145,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _handleToolCall(List<dynamic> functionCalls) {
+  Future<void> _handleToolCall(List<dynamic> functionCalls) async {
     final call = functionCalls
         .whereType<Map>()
         .cast<Map<dynamic, dynamic>>()
@@ -160,16 +163,21 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // Don't end the call yet — per the system prompt, Gemini still says a
-    // closing line after calling generate_report. onTurnComplete finishes
-    // things once that's actually done playing.
-    _pendingReport = ReportRecord(
+    final record = ReportRecord(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       createdAt: DateTime.now(),
       reportContent: reportContent,
       totalScore: totalScore.toInt(),
       resultAnalysis: resultAnalysis,
     );
+    // Persist right away so the report survives even if something goes
+    // wrong later in the call-teardown/dialog flow below.
+    await ReportStore.save(record);
+
+    // Don't end the call yet — per the system prompt, Gemini still says a
+    // closing line after calling generate_report. onTurnComplete finishes
+    // things once that's actually done playing.
+    _pendingReport = record;
   }
 
   Future<void> _finishInterview() async {

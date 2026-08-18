@@ -37,6 +37,8 @@ dependencies:
   record: ^6.2.1
   web_socket_channel: ^3.0.3
   flutter_sound: ^9.30.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
 
 dev_dependencies:
   flutter_test:
