@@ -96,9 +96,14 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
     thinkingConfig: { thinkingBudget: 0 },
     realtimeInputConfig: {
       automaticActivityDetection: {
-        // 心理諮商對談中常有停頓思考，容忍度設在說明書建議的 1.5~2 秒
-        // 區間高位，避免使用者話講到一半就被判定為講完了。
-        silenceDurationMs: 1750,
+        // 原本設 1750ms（說明書建議 1.5~2 秒區間高位）是為了避免使用者話講
+        // 到一半就被誤判講完，但代價是每一輪對話使用者講完後都至少要等滿
+        // 這段時間，實測使用者反應等待感明顯（甚至會忍不住問「還在嗎」）。
+        // 查證 Gemini Live API 官方文件，伺服器內部預設約 800ms，建議範圍
+        // 500~800ms——我們原本的設定遠比官方建議保守。改成官方建議範圍內
+        // 折衷值 650ms，如果又開始出現「話講到一半被打斷」的狀況，可以再
+        // 調回去。
+        silenceDurationMs: 650,
       },
     },
     // 純粹拿來對時間軸用的診斷用途：開啟後 log 裡會多一筆使用者語音的文字
