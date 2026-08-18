@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -89,7 +90,17 @@ class VoiceSessionService {
       onDone: () {
         if (!_stopping) onDisconnected?.call();
       },
-      onError: (_) {},
+      // Previously silently swallowed — meaning an unexpected disconnect
+      // left zero trace of why. Logged so it at least shows up in `flutter
+      // logs`/the IDE console next time this happens.
+      onError: (error, stackTrace) {
+        developer.log(
+          'WebSocket error',
+          name: 'VoiceSessionService',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      },
     );
 
     final audioStream = await _recorder.startStream(

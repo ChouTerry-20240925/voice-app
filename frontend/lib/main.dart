@@ -69,13 +69,16 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     },
     onToolCall: (functionCalls) => _handleToolCall(functionCalls),
-    // Safety net: if the connection drops before turn_complete ever
-    // arrives, don't leave the user stuck on a call that looks live but
-    // isn't — finish up the same way, just without waiting on playback
-    // that's never coming.
+    // Safety net for any unexpected disconnect (server hung up, network
+    // dropped, ...) — don't leave the user stuck on a call that looks live
+    // but isn't.
     onDisconnected: () {
       if (_pendingReport != null) {
+        // turn_complete was never going to arrive now — finish up the same
+        // way, just without waiting on playback that's never coming.
         _finishInterview();
+      } else {
+        _handleUnexpectedDisconnect();
       }
     },
     // Local mic-amplitude heuristic only (see VoiceSessionService) — guard
@@ -143,6 +146,20 @@ class _HomeScreenState extends State<HomeScreen> {
         SnackBar(content: Text('無法開始通話：$e')),
       );
     }
+  }
+
+  Future<void> _handleUnexpectedDisconnect() async {
+    if (!_isCallActive) return;
+    await _voiceSession.stop();
+    await _playback.stop();
+    if (!mounted) return;
+    setState(() {
+      _isCallActive = false;
+      _avatarState = AvatarState.idle;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('連線中斷，請重新開始通話')),
+    );
   }
 
   Future<void> _handleToolCall(List<dynamic> functionCalls) async {
