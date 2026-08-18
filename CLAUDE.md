@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 語音對話心理評估 APP：全語音互動的心理健康引導介面，虛擬人物（Avatar）與使用者即時語音對談。內建「訪談模式」（BSRS-5 量表）與「專業問答模式」，對話結束後由 Gemini 產出結構化報表供使用者檢閱、加備註。
 
-Full spec: `語音對話心理評估APP開發說明書.md`. Current build status and next steps: `TODO.md` — **read this first**, it tracks what phase the project is in and exactly which step to pick up next.
-
 ## Architecture
 
 Two-part system, `frontend/` (Flutter) and `backend/` (Node.js), communicating over WebSocket. The backend exists solely to keep the Gemini API key off the client and to proxy the Gemini Live session — it holds no other business logic.
