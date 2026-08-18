@@ -37,6 +37,7 @@
   - [x] Step 1：Flutter 端用 `record` 套件擷取 16kHz PCM，轉 Base64，透過 WebSocket 送到 backend（`frontend/lib/services/voice_session_service.dart`；`RecordConfig` 有開 `echoCancel`/`autoGain`/`noiseSuppress`，沒開的話喇叭聲音會被錄回去造成 Gemini 誤判打斷）
   - [x] Step 2：Flutter 端用 `flutter_sound` 串流播放 backend 轉發回來的音訊（`frontend/lib/services/audio_playback_service.dart`）。**重要教訓**：音訊不能一收到就整包塞進原生播放器緩衝區，也不能固定睡滿每片時長來節流——要用牆上時鐘追蹤「已餵時長 vs. 實際經過時間」，只有領先超過安全值（目前 300ms）才睡，且睡的時長要精算，否則會累積誤差造成破音或緩衝區被掏空
   - [x] Step 3：Avatar 動畫狀態機（傾聽/說話狀態切換，`frontend/lib/main.dart` 的 `_AvatarView` + `_StickFigurePainter`，線條人形依 idle/listening/speaking 呈現不同姿勢與動畫節奏）。狀態切換依據：開始通話→listening、收到音訊（`onAudioChunk`）→speaking、被打斷（`onInterrupted`）→listening、`turn_complete`→listening、結束通話→idle。實機驗證正常
+    - **後續補上第 4 個狀態 `thinking`**（Phase 4 測試階段使用者反應「說完話後停頓會等很久、不知道是不是在處理」才加的）：使用者停頓時顯示「手托下巴 + 頭上三個依序跳動的點」。判斷邏輯在 `voice_session_service.dart`，用雙門檻（-30dB 進入「說話」、-40dB 才確認「安靜」中間留死區）+ 1500ms 防抖，音量直接從送給後端的 PCM16 chunk 自己算 peak dBFS——一開始改用 `record` 套件內建的 `onAmplitudeChanged`，但在 `startStream()` 串流模式下該 API 沒有正確回報數值，思考動畫完全不會觸發，才改成自己算。純前端本地判斷，不影響實際送給 Gemini 的音訊。**已實機驗證會觸發，但使用者反應效果不夠明顯**，之後可能要加強動畫視覺或調整閾值/防抖時間
   - [x] Step 4：測試語音延遲、Barge-in（打斷）機制、VAD 靜音容忍度（1.5~2 秒不要太敏感）
     - Barge-in 的 client 端機制（backend 轉發 `serverContent.interrupted`、前端立刻停止播放並丟棄舊音訊）已完成並驗證正常，停止動作約 10ms 內完成
     - **已知待觀察項**：使用者打斷後，Gemini 重新生成新回覆＋語音合成大約要等 3 秒左右，這段是模型端本身的延遲，前端/backend 目前無法縮短，之後如果覺得太久可能要重新檢視 prompt/連線設定
@@ -49,13 +50,16 @@
     - 連線建立後會呼叫 `session.sendClientContent({...})` 主動觸發 Gemini 開口，讓它照 System Prompt 的【開場】指示先問候（例如「你最近心情怎麼樣？」），不用等使用者先講話。**重要教訓**：一開始用完全空白的 `sendClientContent({ turnComplete: true })` 沒有讓 Gemini 產生回應——SDK 文件說這個空白 nudge 是設計給「沒有開 VAD/realtime audio」的情境用的；我們的連線有開 `automaticActivityDetection`，所以改成塞一則標記為系統事件的假 `user` turn（`[系統事件：...]`）當觸發點才成功，System Prompt 也要補一句告訴模型別把這則訊息當成使用者真的講的話。實機驗證：Gemini 會主動先問候，但需要等一下（幾秒延遲）
     - `frontend/lib/main.dart` 新增 `ConversationMode` 選取狀態：「訪談模式」按鈕現在會真的被選取（有視覺反饋），「專業問答模式」按下去會提示尚未開放。**目前沒選模式時「開始問答」預設走訪談模式**，前端還沒有把選取的模式傳給 backend（因為 backend 目前也只有訪談模式這一種設定），這條線要等 Step 2 專業問答模式做出來後再一起接上
     - **已部署到 Render 並實機驗證**：Gemini 會主動先問候、後續對話自然不像問卷
-  - [ ] Step 2：撰寫專業問答模式 System Prompt
+  - [x] Step 2：撰寫專業問答模式 System Prompt，已寫進 `backend/src/geminiLive.js`（`QA_SYSTEM_PROMPT`）。內容決策（使用者確認）：話題不設嚴格邊界（先直接套模型，保留修改空間）、超出衛教範圍（如具體醫療診斷/藥物建議）時溫和轉介專業協助、不呼叫 `generate_report`／不產生報表、被動等待使用者先開口（不像訪談模式會主動開場）
+    - `bridgeClientToGemini(clientSocket, mode)` 依 `mode`（`'interview'` | `'qa'`）切換 systemInstruction/是否掛 `GENERATE_REPORT_TOOL`/是否送開場 nudge；`backend/src/server.js` 從 WebSocket 連線網址的 `?mode=` 讀取
+    - 前端 `frontend/lib/services/voice_session_service.dart` 的 `start()` 加上 `mode` 參數並接到連線網址；`main.dart` 的「專業問答模式」按鈕改成真的可選取（拿掉原本「尚未開放」的提示）
+    - 已部署到 Render 並實機驗證整體流程可用
   - [x] Step 3：前端接收 `tool_call` 後自動斷線、解析 `report_content`/`total_score`/`result_analysis` 並渲染到報表頁
-    - `frontend/lib/services/voice_session_service.dart` 新增 `onToolCall`，`main.dart` 的 `_handleToolCall` 解析 `generate_report` 的 args、建立 `ReportRecord`、結束通話、導到 `ReportDetailScreen`
+    - `frontend/lib/services/voice_session_service.dart` 新增 `onToolCall`，`main.dart` 的 `_handleToolCall` 解析 `generate_report` 的 args、建立 `ReportRecord`
     - `geminiLive.js` 現在會在轉發 `tool_call` 給前端的同時，也呼叫 `session.sendToolResponse(...)` 回一個簡單的 ack，避免 Gemini 呼叫完 `generate_report` 後等不到回應
     - **已知限制**：新產生的報表目前只會導到報表詳情頁顯示，**不會**出現在「歷史報表」清單（`report_history_screen.dart` 還是讀 `buildFakeReportRecords()` 假資料），要等 Step 4 接上 `hive` 才會真正持久化並出現在清單裡
-    - **重要教訓（連線強制關閉問題）**：實測發現連線會在對話進行到「第二輪」左右（不是在 generate_report 附近）就被 API 強制關閉，錯誤是 `The audio content type (CONTENT_TYPE_AUDIO) is not supported for this model configuration`。從 log 追出真正原因：Gemini 這個模型預設會產生 thinking（內部推理）的文字內容（`{"text":"...","thought":true}`），但我們的 `responseModalities` 只允許 `AUDIO`，兩者疑似衝突導致模型接續產生語音時崩潰。修法：加上 `thinkingConfig: { thinkingBudget: 0 }` 關閉 thinking（對即時語音對話本來就不需要，還能降低延遲）。`session.sendToolResponse` 那個修法本身沒錯，只是不是這次連線關閉的真正主因
-    - **尚未部署到 Render 實測**，之後要驗證：關閉 thinking 後對話是否能撐到最後、`generate_report` 有沒有正確觸發、報表頁內容是否正確、連線是否乾淨結束
+    - **重要教訓（連線強制關閉問題，已修復並實機驗證）**：實測發現連線會在對話進行到「第二輪」左右（不是在 generate_report 附近）就被 API 強制關閉，錯誤是 `The audio content type (CONTENT_TYPE_AUDIO) is not supported for this model configuration`。從 log 追出真正原因：Gemini 這個模型預設會產生 thinking（內部推理）的文字內容（`{"text":"...","thought":true}`），但我們的 `responseModalities` 只允許 `AUDIO`，兩者疑似衝突導致模型接續產生語音時崩潰。修法：加上 `thinkingConfig: { thinkingBudget: 0 }` 關閉 thinking（對即時語音對話本來就不需要，還能降低延遲）。**已部署到 Render 並實機驗證通過**：對話能撐到最後、`generate_report` 正確觸發、連線乾淨結束
+    - **重要教訓（報表彈窗跳出太快）**：原本收到 `tool_call` 就立刻掛斷/跳轉，但 System Prompt 要求模型呼叫 `generate_report` 前會先講一句道別語音，導致道別還沒播完畫面就跳走。修法：收到 `tool_call` 先記住報表資料、不掛斷；`AudioPlaybackService` 新增 `waitUntilIdle()`（等佇列音訊真正播完，不只是「收到」），等 `turn_complete` 且播放完畢後才結束通話，彈出「對話已完成」對話框讓使用者點「查看報表詳情」才導頁；另外加了 `onDisconnected` 保險，避免連線意外斷掉、`turn_complete` 沒送到時卡住。已實機驗證
   - [ ] Step 4：`hive` 串接，把報表 JSON + 備註改成真正寫入本地資料庫（目前 `frontend/lib/screens/report_detail_screen.dart` 的備註只存在 State 記憶體裡，重開 App 會消失）
   - checkpoint：完整跑一次「開始問答→BSRS-5 對話→產生報表→寫入本地→查看歷史紀錄」流程
 - [ ] **Phase 5：收尾**
@@ -66,4 +70,3 @@
 
 - **金鑰安全**：`backend/.env` 放實際金鑰，`.env.example` 只能放佔位值，`.gitignore` 已排除 `.env`（曾經不小心把金鑰打進 `.env.example`，已修正並確認沒進 git 歷史）
 - **Render 免費方案**：閒置會休眠，正式 Demo 前需再評估是否升級或加 keep-alive 腳本
-- **右側「訪談模式」「專業問答模式」按鈕**目前是空邏輯（no-op），要等 Phase 4 System Prompt 完成後才會真正決定連線時要送哪一種設定

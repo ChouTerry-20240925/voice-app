@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:record/record.dart';
@@ -48,8 +49,13 @@ class VoiceSessionService {
   // Two thresholds (not one) so ambient noise sitting right at the boundary
   // can't flip the state back and forth: crossing above _speechThresholdDb
   // enters "speaking", crossing below _silenceThresholdDb (a few dB lower)
-  // confirms "silence" — readings in between change nothing. Amplitude and
-  // noise floor vary a lot by device, so these may need retuning.
+  // confirms "silence" — readings in between change nothing. This is a peak
+  // dBFS reading computed straight off the outgoing PCM16 chunks (see
+  // _peakDbfsOf), not the `record` plugin's own amplitude API — that API
+  // turned out not to report real levels while recording via startStream()
+  // on at least one tested device, which silently kept this feature from
+  // ever triggering. Amplitude and noise floor vary a lot by device, so
+  // these thresholds may still need retuning.
   static const double _speechThresholdDb = -30.0;
   static const double _silenceThresholdDb = -40.0;
   // Close to the backend's own silenceDurationMs (1750ms, see
@@ -62,7 +68,6 @@ class VoiceSessionService {
   WebSocketChannel? _channel;
   StreamSubscription<Uint8List>? _audioSub;
   StreamSubscription? _channelSub;
-  StreamSubscription<Amplitude>? _amplitudeSub;
   Timer? _pauseTimer;
   bool _userSpeaking = false;
   bool _stopping = false;
@@ -101,23 +106,33 @@ class VoiceSessionService {
       ),
     );
 
+    _userSpeaking = false;
     _audioSub = audioStream.listen((chunk) {
       _channel?.sink.add(jsonEncode({
         'type': 'audio',
         'data': base64Encode(chunk),
         'mimeType': 'audio/pcm;rate=16000',
       }));
+      _handleAmplitude(_peakDbfsOf(chunk));
     });
-
-    _userSpeaking = false;
-    _amplitudeSub = _recorder
-        .onAmplitudeChanged(const Duration(milliseconds: 200))
-        .listen(_handleAmplitude);
   }
 
-  void _handleAmplitude(Amplitude amplitude) {
-    final level = amplitude.current;
+  /// Peak dBFS of a PCM16 mono chunk: 0 is full-scale, more negative is
+  /// quieter. Silent input reads as [double.negativeInfinity]-ish, clamped
+  /// to a sane floor.
+  double _peakDbfsOf(Uint8List pcmBytes) {
+    if (pcmBytes.length < 2) return -160.0;
+    final samples = ByteData.sublistView(pcmBytes);
+    var peak = 0;
+    for (var i = 0; i + 1 < pcmBytes.length; i += 2) {
+      final sample = samples.getInt16(i, Endian.little).abs();
+      if (sample > peak) peak = sample;
+    }
+    if (peak == 0) return -160.0;
+    return 20 * math.log(peak / 32768) / math.ln10;
+  }
 
+  void _handleAmplitude(double level) {
     if (level > _speechThresholdDb) {
       _pauseTimer?.cancel();
       _pauseTimer = null;
@@ -169,8 +184,6 @@ class VoiceSessionService {
     _stopping = true;
     await _audioSub?.cancel();
     _audioSub = null;
-    await _amplitudeSub?.cancel();
-    _amplitudeSub = null;
     _pauseTimer?.cancel();
     _pauseTimer = null;
     _userSpeaking = false;
