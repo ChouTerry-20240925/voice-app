@@ -67,12 +67,18 @@ class VoiceSessionService {
   // fast (even if it sometimes fires on an ordinary mid-sentence pause,
   // self-corrects via onUserSpeaking) beats a silent screen.
   static const Duration _pauseDelay = Duration(milliseconds: 400);
+  // A single loud blip (breath, throat clear, background noise) crossing
+  // _speechThresholdDb used to cancel "thinking" instantly. Require it to
+  // stay out of confirmed-silence for this long before believing the user
+  // actually resumed talking.
+  static const Duration _speechConfirmDelay = Duration(milliseconds: 250);
 
   final AudioRecorder _recorder = AudioRecorder();
   WebSocketChannel? _channel;
   StreamSubscription<Uint8List>? _audioSub;
   StreamSubscription? _channelSub;
   Timer? _pauseTimer;
+  Timer? _speechTimer;
   bool _userSpeaking = false;
   bool _stopping = false;
 
@@ -161,18 +167,26 @@ class VoiceSessionService {
     if (level > _speechThresholdDb) {
       _pauseTimer?.cancel();
       _pauseTimer = null;
-      if (!_userSpeaking) {
-        _userSpeaking = true;
-        onUserSpeaking?.call();
+      if (!_userSpeaking && _speechTimer == null) {
+        _speechTimer = Timer(_speechConfirmDelay, () {
+          _speechTimer = null;
+          _userSpeaking = true;
+          onUserSpeaking?.call();
+        });
       }
       return;
     }
 
     if (level > _silenceThresholdDb) {
-      // Dead zone between the two thresholds — don't start or reset the
-      // pause countdown on a reading that isn't clearly one or the other.
+      // Dead zone between the two thresholds — don't start or reset either
+      // countdown on a reading that isn't clearly one or the other.
       return;
     }
+
+    // Confirmed silence: a pending "just started speaking" guess was only
+    // a blip, not sustained — drop it.
+    _speechTimer?.cancel();
+    _speechTimer = null;
 
     if (_userSpeaking && _pauseTimer == null) {
       _pauseTimer = Timer(_pauseDelay, () {
@@ -211,6 +225,8 @@ class VoiceSessionService {
     _audioSub = null;
     _pauseTimer?.cancel();
     _pauseTimer = null;
+    _speechTimer?.cancel();
+    _speechTimer = null;
     _userSpeaking = false;
     await _recorder.stop();
 
