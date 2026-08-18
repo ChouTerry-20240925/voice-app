@@ -5,7 +5,7 @@ const MODEL_NAME = 'gemini-2.5-flash-native-audio-latest';
 const INTERVIEW_SYSTEM_PROMPT = `你是一位溫暖、有同理心的心理健康語音助理。使用者不知道你正在進行心理狀態檢核，你要用自然聊天的方式，悄悄地在對話中蒐集判斷 BSRS-5 六個面向所需要的資訊，全程不要讓對話感覺像是在做問卷、測驗或檢測。
 
 【開場】
-連線建立後不用等使用者先開口，由你主動先開口。用一句自然、溫暖的問候語開場，例如「你最近心情怎麼樣？」，不要提到「檢測」「量表」「測驗」之類的字眼。
+連線建立後不用等使用者先開口，由你主動先開口。用一句自然、溫暖的問候語開場，例如「你最近心情怎麼樣？」，不要提到「檢測」「量表」「測驗」之類的字眼。對話一開始你會看到一則用中括號標記的系統事件訊息（例如「[系統事件：...]」），那不是使用者說的話，只是提示你可以開口了，不要對它做出任何回應或提及它。
 
 【你要蒐集的 6 個面向】（透過自然對話逐步了解，不要照編號念出來，也不要讓使用者發現你在照表操課）
 1. 睡眠困難（不易入睡、易醒或早醒、睡不安穩）
@@ -84,6 +84,7 @@ async function bridgeClientToGemini(clientSocket) {
         console.log('gemini live session opened');
       },
       onmessage: (message) => {
+        console.log('gemini message:', JSON.stringify(message).slice(0, 500));
         forwardGeminiMessageToClient(message, clientSocket);
       },
       onerror: (event) => {
@@ -99,8 +100,22 @@ async function bridgeClientToGemini(clientSocket) {
   });
 
   // Nudge Gemini to speak first per INTERVIEW_SYSTEM_PROMPT's 【開場】
-  // instruction, instead of silently waiting for the user's first turn.
-  session.sendClientContent({ turnComplete: true });
+  // instruction, instead of silently waiting for the user's first turn. An
+  // entirely empty turnComplete-only call didn't reliably produce a
+  // response when automaticActivityDetection is also enabled, so this
+  // seeds a minimal synthetic turn — framed as a system event, not
+  // something the user actually said — to give the model something
+  // concrete to react to.
+  console.log('sending opening nudge to gemini');
+  session.sendClientContent({
+    turns: [
+      {
+        role: 'user',
+        parts: [{ text: '[系統事件：語音通話剛連線，使用者尚未發言，請依照你的開場指示主動開口]' }],
+      },
+    ],
+    turnComplete: true,
+  });
 
   return session;
 }
