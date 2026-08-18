@@ -37,14 +37,20 @@ class AudioPlaybackService {
     await _player.feedUint8FromStream(pcmBytes);
   }
 
-  /// Stops and discards whatever is currently queued/playing without
-  /// closing the player session, for barge-in: the model's response was
-  /// interrupted, but more audio for the next turn will still arrive.
+  /// Discards whatever is currently queued/playing, for barge-in: the
+  /// model's response was interrupted, but more audio for the next turn
+  /// will still arrive.
+  ///
+  /// Chunks arrive from the network far faster than they play out, so by
+  /// the time an interruption is detected the rest of the reply is often
+  /// already sitting in the native audio buffer — stopPlayer() alone does
+  /// not reliably discard that buffer. Closing and reopening the player
+  /// tears down the underlying audio track entirely, guaranteeing nothing
+  /// stale is left to play.
   Future<void> stopCurrentPlayback() async {
     if (!_isOpen) return;
-    await _player.stopPlayer();
-    // Forces the next playChunk() to call startPlayerFromStream() again,
-    // since stopPlayer() tears down the underlying playback stream.
+    await _player.closePlayer();
+    await _player.openPlayer();
     _sampleRate = null;
   }
 
