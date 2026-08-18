@@ -55,6 +55,7 @@ function forwardGeminiMessageToClient(message, clientSocket) {
   }
 
   if (message.serverContent?.interrupted) {
+    console.log('gemini live: interrupted (barge-in)');
     clientSocket.send(JSON.stringify({ type: 'interrupted' }));
   }
 
