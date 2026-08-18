@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'models/report_record.dart';
+import 'screens/report_detail_screen.dart';
 import 'screens/report_history_screen.dart';
 import 'services/audio_playback_service.dart';
 import 'services/voice_session_service.dart';
@@ -53,6 +55,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _setAvatarState(AvatarState.listening);
     },
     onTurnComplete: () => _setAvatarState(AvatarState.listening),
+    onToolCall: (functionCalls) => _handleToolCall(functionCalls),
   );
 
   void _setAvatarState(AvatarState state) {
@@ -102,6 +105,47 @@ class _HomeScreenState extends State<HomeScreen> {
         SnackBar(content: Text('無法開始通話：$e')),
       );
     }
+  }
+
+  Future<void> _handleToolCall(List<dynamic> functionCalls) async {
+    final call = functionCalls
+        .whereType<Map>()
+        .cast<Map<dynamic, dynamic>>()
+        .where((c) => c['name'] == 'generate_report')
+        .firstOrNull;
+    final args = call?['args'];
+    if (args is! Map) return;
+
+    final reportContent = args['report_content'];
+    final totalScore = args['total_score'];
+    final resultAnalysis = args['result_analysis'];
+    if (reportContent is! String ||
+        totalScore is! num ||
+        resultAnalysis is! String) {
+      return;
+    }
+
+    final record = ReportRecord(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      createdAt: DateTime.now(),
+      reportContent: reportContent,
+      totalScore: totalScore.toInt(),
+      resultAnalysis: resultAnalysis,
+    );
+
+    // The model's job is done once it calls generate_report — end the
+    // call the same way pressing "結束通話" would.
+    await _voiceSession.stop();
+    await _playback.stop();
+    if (!mounted) return;
+    setState(() {
+      _isCallActive = false;
+      _avatarState = AvatarState.idle;
+    });
+
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => ReportDetailScreen(record: record)),
+    );
   }
 
   void _selectInterviewMode() {

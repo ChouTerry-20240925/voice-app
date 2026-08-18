@@ -46,11 +46,15 @@
   - [x] Step 1：撰寫 BSRS-5 訪談模式 System Prompt + `generate_report` tool schema，已寫進 `backend/src/geminiLive.js`（`INTERVIEW_SYSTEM_PROMPT`＋`GENERATE_REPORT_TOOL`，用 `Type.OBJECT`/`Type.STRING`/`Type.INTEGER` 而非說明書原文的字串寫法）。內容決策（**非正式醫療專業審閱**，正式使用前建議請心理衛生背景的人再看過措辭）：
     - 第 6 題（自殺意念）用婉轉問法、避開「自殺」字面；偵測到高風險時溫和提醒安心專線 1925，仍完成流程並呼叫 `generate_report`
     - 整個訪談改成「默默進行」：System Prompt 明確要求不要照題號念、不要提到「量表/測驗/檢測」等字眼，讓 6 個面向融入自然聊天中蒐集
-    - 連線建立後會呼叫 `session.sendClientContent({ turnComplete: true })` 主動觸發 Gemini 開口，讓它照 System Prompt 的【開場】指示先問候（例如「你最近心情怎麼樣？」），不用等使用者先講話
+    - 連線建立後會呼叫 `session.sendClientContent({...})` 主動觸發 Gemini 開口，讓它照 System Prompt 的【開場】指示先問候（例如「你最近心情怎麼樣？」），不用等使用者先講話。**重要教訓**：一開始用完全空白的 `sendClientContent({ turnComplete: true })` 沒有讓 Gemini 產生回應——SDK 文件說這個空白 nudge 是設計給「沒有開 VAD/realtime audio」的情境用的；我們的連線有開 `automaticActivityDetection`，所以改成塞一則標記為系統事件的假 `user` turn（`[系統事件：...]`）當觸發點才成功，System Prompt 也要補一句告訴模型別把這則訊息當成使用者真的講的話。實機驗證：Gemini 會主動先問候，但需要等一下（幾秒延遲）
     - `frontend/lib/main.dart` 新增 `ConversationMode` 選取狀態：「訪談模式」按鈕現在會真的被選取（有視覺反饋），「專業問答模式」按下去會提示尚未開放。**目前沒選模式時「開始問答」預設走訪談模式**，前端還沒有把選取的模式傳給 backend（因為 backend 目前也只有訪談模式這一種設定），這條線要等 Step 2 專業問答模式做出來後再一起接上
-    - **尚未部署到 Render 實測**，之後要驗證：Gemini 開場是否真的主動先問候、後續對話是否感覺自然不像做問卷、結尾有沒有正確呼叫 generate_report
+    - **已部署到 Render 並實機驗證**：Gemini 會主動先問候、後續對話自然不像問卷
   - [ ] Step 2：撰寫專業問答模式 System Prompt
-  - [ ] Step 3：前端接收 `tool_call`（backend 已會轉發 `{"type":"tool_call","functionCalls":[...]}`）後自動斷線、解析 `report_content`/`total_score`/`result_analysis` 並渲染到報表頁
+  - [x] Step 3：前端接收 `tool_call` 後自動斷線、解析 `report_content`/`total_score`/`result_analysis` 並渲染到報表頁
+    - `frontend/lib/services/voice_session_service.dart` 新增 `onToolCall`，`main.dart` 的 `_handleToolCall` 解析 `generate_report` 的 args、建立 `ReportRecord`、結束通話、導到 `ReportDetailScreen`
+    - **重要教訓**：Gemini 呼叫完 `generate_report` 後，backend 如果沒有回應這個 function call（`session.sendToolResponse(...)`），Gemini API 會在模型嘗試接續動作時報錯並強制關閉連線（`The audio content type (CONTENT_TYPE_AUDIO) is not supported for this model configuration`），不是乾淨的結束。`geminiLive.js` 現在會在轉發 `tool_call` 給前端的同時，也呼叫 `session.sendToolResponse(...)` 回一個簡單的 ack
+    - **已知限制**：新產生的報表目前只會導到報表詳情頁顯示，**不會**出現在「歷史報表」清單（`report_history_screen.dart` 還是讀 `buildFakeReportRecords()` 假資料），要等 Step 4 接上 `hive` 才會真正持久化並出現在清單裡
+    - **尚未部署到 Render 實測**，之後要驗證：完整跑完訪談後，`generate_report` 有沒有正確觸發、報表頁內容是否正確、連線是否乾淨結束（不再出現強制關閉的錯誤 log）
   - [ ] Step 4：`hive` 串接，把報表 JSON + 備註改成真正寫入本地資料庫（目前 `frontend/lib/screens/report_detail_screen.dart` 的備註只存在 State 記憶體裡，重開 App 會消失）
   - checkpoint：完整跑一次「開始問答→BSRS-5 對話→產生報表→寫入本地→查看歷史紀錄」流程
 - [ ] **Phase 5：收尾**

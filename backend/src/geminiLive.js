@@ -65,7 +65,13 @@ function createGenAIClient() {
 async function bridgeClientToGemini(clientSocket) {
   const ai = createGenAIClient();
 
-  const session = await ai.live.connect({
+  // Declared before connect() (not `const session = await ...`) so the
+  // onmessage callback's closure can reference it — by the time any real
+  // message arrives (after setup completes and our opening nudge below is
+  // sent), this will already be assigned.
+  let session;
+
+  session = await ai.live.connect({
     model: MODEL_NAME,
     config: {
       responseModalities: [Modality.AUDIO],
@@ -85,7 +91,7 @@ async function bridgeClientToGemini(clientSocket) {
       },
       onmessage: (message) => {
         console.log('gemini message:', JSON.stringify(message).slice(0, 500));
-        forwardGeminiMessageToClient(message, clientSocket);
+        forwardGeminiMessageToClient(message, clientSocket, session);
       },
       onerror: (event) => {
         console.error('gemini live error:', event?.message || event);
@@ -120,7 +126,7 @@ async function bridgeClientToGemini(clientSocket) {
   return session;
 }
 
-function forwardGeminiMessageToClient(message, clientSocket) {
+function forwardGeminiMessageToClient(message, clientSocket, session) {
   if (clientSocket.readyState !== clientSocket.OPEN) return;
 
   const modelTurn = message.serverContent?.modelTurn;
@@ -154,6 +160,19 @@ function forwardGeminiMessageToClient(message, clientSocket) {
         functionCalls: message.toolCall.functionCalls,
       })
     );
+
+    // Acknowledge the call so Gemini isn't left waiting for a response it
+    // never gets — without this the session errors out and force-closes
+    // once the model tries to continue after calling generate_report.
+    // generate_report only hands data to the client; there's nothing for
+    // the server to actually execute, so the response is a bare ack.
+    session.sendToolResponse({
+      functionResponses: message.toolCall.functionCalls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        response: { output: { success: true } },
+      })),
+    });
   }
 }
 
