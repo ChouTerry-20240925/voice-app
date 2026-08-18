@@ -35,12 +35,26 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _isCallActive = false;
-  final AvatarState _avatarState = AvatarState.idle;
+  AvatarState _avatarState = AvatarState.idle;
   final _playback = AudioPlaybackService();
   late final _voiceSession = VoiceSessionService(
-    onAudioChunk: (data, mimeType) => _playback.enqueueChunk(data, mimeType),
-    onInterrupted: () => _playback.interrupt(),
+    onAudioChunk: (data, mimeType) {
+      _playback.enqueueChunk(data, mimeType);
+      _setAvatarState(AvatarState.speaking);
+    },
+    onInterrupted: () {
+      _playback.interrupt();
+      _setAvatarState(AvatarState.listening);
+    },
+    onTurnComplete: () => _setAvatarState(AvatarState.listening),
   );
+
+  void _setAvatarState(AvatarState state) {
+    if (_avatarState == state) return;
+    setState(() {
+      _avatarState = state;
+    });
+  }
 
   @override
   void dispose() {
@@ -55,6 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _playback.stop();
       setState(() {
         _isCallActive = false;
+        _avatarState = AvatarState.idle;
       });
       return;
     }
@@ -67,8 +82,13 @@ class _HomeScreenState extends State<HomeScreen> {
       await _playback.start();
       setState(() {
         _isCallActive = true;
+        // The model greets first, but audio hasn't arrived yet — this
+        // flips to speaking the moment the first chunk comes in.
+        _avatarState = AvatarState.listening;
       });
     } catch (e) {
+      // _avatarState never left idle if we get here — start() failed
+      // before the success branch's setState ran.
       await _voiceSession.stop();
       await _playback.stop();
       if (!mounted) return;
@@ -156,26 +176,193 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _AvatarView extends StatelessWidget {
+class _AvatarView extends StatefulWidget {
   const _AvatarView({required this.state});
 
   final AvatarState state;
 
   @override
+  State<_AvatarView> createState() => _AvatarViewState();
+}
+
+class _AvatarViewState extends State<_AvatarView>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: _durationFor(widget.state),
+  );
+  late final _curve = CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
+
+  static Duration _durationFor(AvatarState state) => switch (state) {
+        AvatarState.idle => const Duration(milliseconds: 1800),
+        AvatarState.listening => const Duration(milliseconds: 1100),
+        AvatarState.speaking => const Duration(milliseconds: 320),
+      };
+
+  @override
+  void initState() {
+    super.initState();
+    _syncAnimation(widget.state);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AvatarView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.state != widget.state) {
+      _syncAnimation(widget.state);
+    }
+  }
+
+  // Idle stays perfectly still; the other two states loop a back-and-forth
+  // gesture, faster while speaking to read as "talking" rather than "idly
+  // swaying".
+  void _syncAnimation(AvatarState state) {
+    _controller.duration = _durationFor(state);
+    if (state == AvatarState.idle) {
+      _controller.stop();
+      _controller.value = 0;
+    } else {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
+    final colorScheme = Theme.of(context).colorScheme;
+    final (Color bg, Color fg) = switch (widget.state) {
+      AvatarState.idle => (
+          colorScheme.primaryContainer,
+          colorScheme.onPrimaryContainer,
+        ),
+      AvatarState.listening => (
+          colorScheme.tertiaryContainer,
+          colorScheme.onTertiaryContainer,
+        ),
+      AvatarState.speaking => (
+          colorScheme.secondaryContainer,
+          colorScheme.onSecondaryContainer,
+        ),
+    };
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
       width: 220,
       height: 220,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      child: Icon(
-        Icons.person,
-        size: 120,
-        color: Theme.of(context).colorScheme.onPrimaryContainer,
+      decoration: BoxDecoration(shape: BoxShape.circle, color: bg),
+      child: AnimatedBuilder(
+        animation: _curve,
+        builder: (context, _) {
+          return CustomPaint(
+            size: const Size(220, 220),
+            painter: _StickFigurePainter(
+              state: widget.state,
+              t: _curve.value,
+              color: fg,
+            ),
+          );
+        },
       ),
     );
+  }
+}
+
+/// Draws a simple stick figure whose pose reflects [state]: still for idle,
+/// a hand cupped near the ear for listening, both hands gesturing outward
+/// with an open/closing mouth for speaking. [t] oscillates 0→1→0 and drives
+/// whichever motion the current state uses.
+class _StickFigurePainter extends CustomPainter {
+  _StickFigurePainter({
+    required this.state,
+    required this.t,
+    required this.color,
+  });
+
+  final AvatarState state;
+  final double t;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final linePaint = Paint()
+      ..color = color
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+
+    final cx = size.width / 2;
+    final head = Offset(cx, 62);
+    const headRadius = 28.0;
+    final shoulder = Offset(cx, 96);
+    final hip = Offset(cx, 148);
+
+    canvas.drawCircle(head, headRadius, linePaint);
+    canvas.drawLine(shoulder, hip, linePaint);
+    canvas.drawLine(hip, Offset(cx - 26, 198), linePaint);
+    canvas.drawLine(hip, Offset(cx + 26, 198), linePaint);
+
+    final (leftHand, rightHand) = _handPositions(shoulder);
+    canvas.drawLine(shoulder, leftHand, linePaint);
+    canvas.drawLine(shoulder, rightHand, linePaint);
+
+    _paintMouth(canvas, head);
+  }
+
+  (Offset, Offset) _handPositions(Offset shoulder) {
+    switch (state) {
+      case AvatarState.idle:
+        // Relaxed at the sides, no motion.
+        return (
+          shoulder + const Offset(-28, 46),
+          shoulder + const Offset(28, 46),
+        );
+      case AvatarState.listening:
+        // Left arm relaxed; right hand cupped near the ear, gently bobbing.
+        return (
+          shoulder + const Offset(-28, 46),
+          shoulder + Offset(26, -30 - 6 * t),
+        );
+      case AvatarState.speaking:
+        // Both hands swing outward and up together, like talking with
+        // one's hands.
+        return (
+          shoulder + Offset(-30 - 10 * t, 44 - 34 * t),
+          shoulder + Offset(30 + 10 * t, 44 - 34 * t),
+        );
+    }
+  }
+
+  void _paintMouth(Canvas canvas, Offset head) {
+    final mouthCenter = head + const Offset(0, 10);
+
+    if (state == AvatarState.speaking) {
+      final openness = 2 + 12 * t;
+      canvas.drawOval(
+        Rect.fromCenter(center: mouthCenter, width: 16, height: openness),
+        Paint()..color = color,
+      );
+    } else {
+      canvas.drawLine(
+        mouthCenter - const Offset(8, 0),
+        mouthCenter + const Offset(8, 0),
+        Paint()
+          ..color = color
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _StickFigurePainter oldDelegate) {
+    return oldDelegate.state != state ||
+        oldDelegate.t != t ||
+        oldDelegate.color != color;
   }
 }
 

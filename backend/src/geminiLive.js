@@ -13,6 +13,13 @@ async function bridgeClientToGemini(clientSocket) {
     model: MODEL_NAME,
     config: {
       responseModalities: [Modality.AUDIO],
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          // 心理諮商對談中常有停頓思考，容忍度設在說明書建議的 1.5~2 秒
+          // 區間高位，避免使用者話講到一半就被判定為講完了。
+          silenceDurationMs: 1750,
+        },
+      },
     },
     callbacks: {
       onopen: () => {

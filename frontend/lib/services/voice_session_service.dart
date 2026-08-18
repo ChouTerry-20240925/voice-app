@@ -12,16 +12,22 @@ const String kBackendWsUrl = 'wss://voice-bsrs-backend.onrender.com';
 ///
 /// Incoming `{"type":"audio",...}` messages are decoded and handed to
 /// [onAudioChunk]; `{"type":"interrupted"}` (the model was barged in on)
-/// is handed to [onInterrupted]. Both callbacks must return promptly
-/// (queue/signal and return) rather than waiting for audio to actually
-/// finish playing — otherwise a slow 'audio' handler would delay this
-/// listener from ever seeing the 'interrupted' message that follows it.
-/// `turn_complete`/`tool_call` are not handled yet — that's Phase 4.
+/// is handed to [onInterrupted]; `{"type":"turn_complete"}` (the model
+/// finished its turn) is handed to [onTurnComplete]. All callbacks must
+/// return promptly (queue/signal and return) rather than waiting for audio
+/// to actually finish playing — otherwise a slow 'audio' handler would
+/// delay this listener from ever seeing the messages that follow it.
+/// `tool_call` is not handled yet — that's Phase 4.
 class VoiceSessionService {
-  VoiceSessionService({this.onAudioChunk, this.onInterrupted});
+  VoiceSessionService({
+    this.onAudioChunk,
+    this.onInterrupted,
+    this.onTurnComplete,
+  });
 
   final void Function(Uint8List data, String mimeType)? onAudioChunk;
   final void Function()? onInterrupted;
+  final void Function()? onTurnComplete;
 
   final AudioRecorder _recorder = AudioRecorder();
   WebSocketChannel? _channel;
@@ -75,6 +81,8 @@ class VoiceSessionService {
         onAudioChunk?.call(base64Decode(data), mimeType);
       case 'interrupted':
         onInterrupted?.call();
+      case 'turn_complete':
+        onTurnComplete?.call();
     }
   }
 
