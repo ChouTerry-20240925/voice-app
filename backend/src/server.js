@@ -42,6 +42,9 @@ wss.on('connection', async (clientSocket, request) => {
     }
 
     if (message.type === 'audio' && message.data) {
+      console.log(
+        `[${new Date().toISOString()}] client audio received, ${message.data.length} chars`
+      );
       geminiSession.sendRealtimeInput({
         audio: {
           data: message.data,
