@@ -134,7 +134,15 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
         console.log(`[${new Date().toISOString()}] gemini live session opened`);
       },
       onmessage: (message) => {
-        console.log('gemini message:', JSON.stringify(message).slice(0, 500));
+        // 音訊 chunk 的 base64 data 動輒幾百字元，混在 log 裡完全看不出
+        // turnComplete/toolCall/usageMetadata 這些真正要盯的事件，所以印
+        // log 前把 data 欄位換成長度標記。
+        const redacted = JSON.stringify(message, (key, value) =>
+          key === 'data' && typeof value === 'string' && value.length > 100
+            ? `<audio ${value.length} chars>`
+            : value
+        );
+        console.log(`[${new Date().toISOString()}] gemini message:`, redacted);
         forwardGeminiMessageToClient(message, clientSocket, session);
       },
       onerror: (event) => {
