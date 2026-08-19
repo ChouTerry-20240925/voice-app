@@ -98,17 +98,25 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
     // 音訊歷史都當 context 重新處理，題數一多、context 跟著線性增長，每輪
     // 生成前要重新消化的內容也跟著變多。開啟 sliding window，讓 context
     // 累積到一定量後自動壓縮/裁剪，避免這個隨對話變長而累加的延遲。
-    contextWindowCompression: { slidingWindow: {} },
+    //
+    // 第一次用預設 triggerTokens 開這個功能完全沒生效——一次 BSRS-5 訪談
+    // 全程也才 5000 出頭 token，遠低於官方預設的觸發門檻，壓縮機制根本沒
+    // 被觸發過。手動把 triggerTokens 壓低到 2000，讓它在這種短對話裡也能
+    // 真的啟動；targetTokens 不特別指定，讓它照官方說明用 triggerTokens/2
+    // 的預設值。
+    contextWindowCompression: {
+      triggerTokens: '2000',
+      slidingWindow: {},
+    },
     realtimeInputConfig: {
       automaticActivityDetection: {
         // 原本設 1750ms（說明書建議 1.5~2 秒區間高位）是為了避免使用者話講
         // 到一半就被誤判講完，但代價是每一輪對話使用者講完後都至少要等滿
         // 這段時間，實測使用者反應等待感明顯（甚至會忍不住問「還在嗎」）。
         // 查證 Gemini Live API 官方文件，伺服器內部預設約 800ms，建議範圍
-        // 500~800ms——我們原本的設定遠比官方建議保守。先改到 650ms，仍偏
-        // 保守，再進一步調到官方建議範圍下限 500ms。如果開始出現「話講到
-        // 一半被打斷」的狀況，可以往回調（650ms 或更高）。
-        silenceDurationMs: 500,
+        // 500~800ms——我們原本的設定遠比官方建議保守。曾試過調到官方建議
+        // 範圍下限 500ms，但實測使用者話還沒講完就被誤判打斷，改回 650ms。
+        silenceDurationMs: 650,
       },
     },
   };
