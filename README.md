@@ -109,6 +109,16 @@ flutter test             # 執行測試
 
 - **喜怒哀樂表情的語意判斷**：延伸現有的 tool-calling 架構（`generate_report` 已驗證過在 `AUDIO` 回覆模式下能穩定夾帶 tool_call），在 System Prompt 加一個輕量工具（例如 `update_emotion(emotion)`），請 Gemini 每輪根據語意判斷後主動呼叫，backend 轉發給前端驅動 Avatar 表情。這樣語意判斷由 Gemini 在既有的對話理解中順便產出，不需額外呼叫模型，也能避開先前開啟 `inputAudioTranscription` 時遇到的時序錯亂問題；取捨是多一個工具呼叫，模型未必每輪都即時或穩定呼叫，需要靠 prompt 調教，且要留意避免重蹈先前 thinking/多模態輸出衝突導致連線被強制關閉的教訓
 
+## 版本紀錄
+
+### v1.0.1
+
+- 升級 Gemini Live 模型：`gemini-2.5-flash-native-audio-latest` → `gemini-3.1-flash-live-preview`，實測回覆延遲明顯改善
+- `thinkingConfig` 改用 3.1 的 `thinkingLevel: 'minimal'`（取代 2.5 用的 `thinkingBudget: 0`）
+- 新增 `speechConfig`，明確指定 `voiceName: 'Zephyr'`：兩個模型版本各自的預設音色沒有公開文件、且彼此不同，換模型會導致聲線跟著變，改為明確指定後不受模型版本影響
+- 修正訪談迴圈問題：關閉 `contextWindowCompression`。原本是為 2.5 版「訪談後段越問越慢」加的 sliding window 壓縮，換到 3.1 後實測出現「訪談問完一輪又從頭重問、`generate_report` 從未被呼叫」的迴圈，懷疑是壓縮/摘要把合成的開場系統事件文字重新帶回 context 前段，讓模型誤判對話重新開始；關閉後測試未再重現，但尚未完全確認根因，正式環境持續觀察中
+- 後端新增使用者端音訊接收 log，方便比對延遲與迴圈問題的發生時間點
+
 ## 授權
 
 尚未指定授權條款。
