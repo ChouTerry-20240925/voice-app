@@ -102,20 +102,16 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
     // gemini-3.1-flash-live-preview replaced thinkingBudget with
     // thinkingLevel; 'minimal' is the equivalent lowest-latency setting.
     thinkingConfig: { thinkingLevel: 'minimal' },
-    // 訪談模式在後段（第 4~6 題）明顯越問越慢：Live API 預設把整段通話的
-    // 音訊歷史都當 context 重新處理，題數一多、context 跟著線性增長，每輪
-    // 生成前要重新消化的內容也跟著變多。開啟 sliding window，讓 context
-    // 累積到一定量後自動壓縮/裁剪，避免這個隨對話變長而累加的延遲。
-    //
-    // 第一次用預設 triggerTokens 開這個功能完全沒生效——一次 BSRS-5 訪談
-    // 全程也才 5000 出頭 token，遠低於官方預設的觸發門檻，壓縮機制根本沒
-    // 被觸發過。手動把 triggerTokens 壓低到 2000，讓它在這種短對話裡也能
-    // 真的啟動；targetTokens 不特別指定，讓它照官方說明用 triggerTokens/2
-    // 的預設值。
-    contextWindowCompression: {
-      triggerTokens: '2000',
-      slidingWindow: {},
-    },
+    // 原本是為了 2.5 版「訪談後段越問越慢」加的 sliding window 壓縮（在
+    // BSRS-5 這種短對話裡把 triggerTokens 壓低到 2000 才會真的觸發）。換到
+    // 3.1 後實測出現「訪談問完一輪後又從頭重問、generate_report 從未被呼叫」
+    // 的迴圈，懷疑是 3.1 做 sliding window 壓縮/摘要時，把當初送出的合成
+    // 開場系統事件文字重新帶回 context 前段，讓模型誤判對話重新開始。先關
+    // 閉驗證：關閉後測試沒再出現迴圈，暫時維持關閉並持續觀察正式環境。
+    // contextWindowCompression: {
+    //   triggerTokens: '2000',
+    //   slidingWindow: {},
+    // },
     realtimeInputConfig: {
       automaticActivityDetection: {
         // 原本設 1750ms（說明書建議 1.5~2 秒區間高位）是為了避免使用者話講
