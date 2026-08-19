@@ -19,10 +19,9 @@ const httpServer = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', async (clientSocket, request) => {
-  console.log('client connected');
-
   const { searchParams } = new URL(request.url, 'http://localhost');
   const mode = searchParams.get('mode') === 'qa' ? 'qa' : 'interview';
+  console.log(`[${new Date().toISOString()}] client connected, mode=${mode}`);
 
   let geminiSession;
   try {
@@ -52,13 +51,15 @@ wss.on('connection', async (clientSocket, request) => {
     }
   });
 
-  clientSocket.on('close', () => {
-    console.log('client disconnected');
+  clientSocket.on('close', (code, reason) => {
+    console.log(
+      `[${new Date().toISOString()}] client disconnected, code=${code}, reason=${reason?.toString() || ''}`
+    );
     geminiSession.close();
   });
 
   clientSocket.on('error', (err) => {
-    console.error('client socket error:', err.message);
+    console.error(`[${new Date().toISOString()}] client socket error:`, err.message);
   });
 });
 

@@ -108,6 +108,10 @@ class VoiceSessionService {
     _channelSub = _channel!.stream.listen(
       _handleIncomingMessage,
       onDone: () {
+        developer.log(
+          'WebSocket closed, code=${_channel?.closeCode}, reason=${_channel?.closeReason}, stopping=$_stopping',
+          name: 'VoiceSessionService',
+        );
         if (!_stopping) onDisconnected?.call();
       },
       // Previously silently swallowed — meaning an unexpected disconnect

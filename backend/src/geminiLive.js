@@ -94,16 +94,21 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
     // We don't need chain-of-thought for a conversational voice
     // assistant anyway, and skipping it also cuts response latency.
     thinkingConfig: { thinkingBudget: 0 },
+    // 訪談模式在後段（第 4~6 題）明顯越問越慢：Live API 預設把整段通話的
+    // 音訊歷史都當 context 重新處理，題數一多、context 跟著線性增長，每輪
+    // 生成前要重新消化的內容也跟著變多。開啟 sliding window，讓 context
+    // 累積到一定量後自動壓縮/裁剪，避免這個隨對話變長而累加的延遲。
+    contextWindowCompression: { slidingWindow: {} },
     realtimeInputConfig: {
       automaticActivityDetection: {
         // 原本設 1750ms（說明書建議 1.5~2 秒區間高位）是為了避免使用者話講
         // 到一半就被誤判講完，但代價是每一輪對話使用者講完後都至少要等滿
         // 這段時間，實測使用者反應等待感明顯（甚至會忍不住問「還在嗎」）。
         // 查證 Gemini Live API 官方文件，伺服器內部預設約 800ms，建議範圍
-        // 500~800ms——我們原本的設定遠比官方建議保守。改成官方建議範圍內
-        // 折衷值 650ms，如果又開始出現「話講到一半被打斷」的狀況，可以再
-        // 調回去。
-        silenceDurationMs: 650,
+        // 500~800ms——我們原本的設定遠比官方建議保守。先改到 650ms，仍偏
+        // 保守，再進一步調到官方建議範圍下限 500ms。如果開始出現「話講到
+        // 一半被打斷」的狀況，可以往回調（650ms 或更高）。
+        silenceDurationMs: 500,
       },
     },
   };
@@ -118,17 +123,23 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
     config,
     callbacks: {
       onopen: () => {
-        console.log('gemini live session opened');
+        console.log(`[${new Date().toISOString()}] gemini live session opened`);
       },
       onmessage: (message) => {
         console.log('gemini message:', JSON.stringify(message).slice(0, 500));
         forwardGeminiMessageToClient(message, clientSocket, session);
       },
       onerror: (event) => {
-        console.error('gemini live error:', event?.message || event);
+        console.error(
+          `[${new Date().toISOString()}] gemini live error:`,
+          event?.code,
+          event?.message || event
+        );
       },
       onclose: (event) => {
-        console.log('gemini live session closed:', event?.reason || '');
+        console.log(
+          `[${new Date().toISOString()}] gemini live session closed, code=${event?.code}, reason=${event?.reason || ''}`
+        );
         if (clientSocket.readyState === clientSocket.OPEN) {
           clientSocket.close();
         }
