@@ -121,6 +121,10 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
         // 500~800ms——我們原本的設定遠比官方建議保守。曾試過調到官方建議
         // 範圍下限 500ms，但實測使用者話還沒講完就被誤判打斷，改回 650ms。
         silenceDurationMs: 650,
+        // 未設定前吃 Gemini 預設值，實測背景一點雜音就會被誤判成使用者開
+        // 口講話，導致 AI 講到一半被打斷（barge-in 誤觸發）。調低開始講話
+        // 的靈敏度以減少雜音誤判。
+        startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
       },
     },
   };
