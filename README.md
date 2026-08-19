@@ -17,7 +17,7 @@
 前端（Flutter）與後端（Node.js）透過 WebSocket 溝通。後端唯一的職責是不讓 Gemini API 金鑰外洩到前端，並轉發 Gemini Live 的雙向語音串流——不含其他商業邏輯。
 
 ```
-Flutter (錄音 → PCM/Base64) --WebSocket--> Node.js Proxy --Gemini Live API--> Gemini 2.5 Flash
+Flutter (錄音 → PCM/Base64) --WebSocket--> Node.js Proxy --Gemini Live API--> Gemini 3.1 Flash Live
 Flutter (音訊播放)          <--WebSocket-- Node.js Proxy <--音訊/tool_call---
 ```
 
@@ -35,7 +35,7 @@ Flutter (音訊播放)          <--WebSocket-- Node.js Proxy <--音訊/tool_call
 | WebSocket | `web_socket_channel` |
 | 後端 | Node.js（`ws` + `http`），部署於 Render Free Tier（Singapore） |
 | Gemini SDK | 官方 `@google/genai` |
-| Gemini Live 模型 | `gemini-2.5-flash-native-audio-latest` |
+| Gemini Live 模型 | `gemini-3.1-flash-live-preview`（音色固定為 `Zephyr`，避免模型版本切換時聲線跟著變） |
 
 ## 專案結構
 
@@ -102,6 +102,8 @@ flutter test             # 執行測試
 - **思考動畫閾值**：使用者停頓判斷用固定的絕對分貝門檻，不會依環境噪音自動調整，吵雜環境下可能誤判
 - **無真正的斷線重連**：Gemini Live session 的對話狀態存在 session 內，連線意外中斷後只能重新開始一段新對話，無法接續原本的訪談進度（除非日後導入 Gemini 的 session resumption 機制）
 - **非正式醫療審閱**：訪談模式與報表的 BSRS-5 相關措辭僅供開發參考，正式上線前建議請具心理衛生背景的人員審閱
+- **`gemini-3.1-flash-live-preview` 仍是 preview 版本，偶有不穩定行為**：實測遇過訪談問完一輪後又從頭重問、`generate_report` 從未被呼叫的迴圈狀況，懷疑跟 `contextWindowCompression`（sliding window 壓縮/摘要）與合成的開場系統事件文字互相干擾有關，目前已關閉 `contextWindowCompression` 觀察中（見 `backend/src/geminiLive.js` 註解），尚未完全確認根因，正式環境需持續觀察是否再現
+- **`silenceDurationMs` 在此模型上可能被忽略**：Google 官方回報 `automaticActivityDetection.silenceDurationMs` 在 `gemini-3.1-flash-live-preview` 上是已知 bug，設定可能不生效，語音打斷/斷句時機因此無法保證跟 2.5 版一致
 
 ## 未來發展
 
