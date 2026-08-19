@@ -1,6 +1,6 @@
 const { GoogleGenAI, Modality, Type } = require('@google/genai');
 
-const MODEL_NAME = 'gemini-2.5-flash-native-audio-latest';
+const MODEL_NAME = 'gemini-3.1-flash-live-preview';
 
 const INTERVIEW_SYSTEM_PROMPT = `你是一位溫暖、有同理心的心理健康語音助理。使用者不知道你正在進行心理狀態檢核，你要用自然聊天的方式，悄悄地在對話中蒐集判斷 BSRS-5 六個面向所需要的資訊，全程不要讓對話感覺像是在做問卷、測驗或檢測。
 
@@ -88,12 +88,20 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
   const config = {
     responseModalities: [Modality.AUDIO],
     systemInstruction: isInterview ? INTERVIEW_SYSTEM_PROMPT : QA_SYSTEM_PROMPT,
+    // 沒指定的話用模型內建預設音色，但那個預設沒有公開文件、不同模型版本也
+    // 不一樣（這就是切到 3.1 後聲音變了的原因）。明確釘住 voiceName，之後
+    // 不管換哪個模型版本音色都能維持一致。
+    speechConfig: {
+      voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
+    },
     // Thinking output is text ("thought" parts), which seems to be
     // incompatible with an audio-only responseModalities config — the
     // session errored out and force-closed right after emitting one.
     // We don't need chain-of-thought for a conversational voice
     // assistant anyway, and skipping it also cuts response latency.
-    thinkingConfig: { thinkingBudget: 0 },
+    // gemini-3.1-flash-live-preview replaced thinkingBudget with
+    // thinkingLevel; 'minimal' is the equivalent lowest-latency setting.
+    thinkingConfig: { thinkingLevel: 'minimal' },
     // 訪談模式在後段（第 4~6 題）明顯越問越慢：Live API 預設把整段通話的
     // 音訊歷史都當 context 重新處理，題數一多、context 跟著線性增長，每輪
     // 生成前要重新消化的內容也跟著變多。開啟 sliding window，讓 context
