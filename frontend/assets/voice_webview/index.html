@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice bridge</title>
+</head>
+<body>
+<script>
+// Runs inside a hidden InAppWebView. Owns mic capture + AI audio playback
+// (both need to share the browser's own audio pipeline for its built-in
+// echoCancellation to have a reference signal — see prototypes/webview-audio-poc/
+// for the standalone validation of this). All UI/state lives in Flutter;
+// this side only talks to Dart via window.flutter_inappwebview.callHandler.
+const BACKEND_WS_URL = 'wss://voice-bsrs-backend.onrender.com';
+
+// Mirrors VoiceSessionService's amplitude-based "is the user talking right
+// now" heuristic (frontend/lib/services/voice_session_service.dart) so the
+// thinking-animation behavior carries over unchanged.
+const SPEECH_THRESHOLD_DB = -30;
+const SILENCE_THRESHOLD_DB = -40;
+const PAUSE_DELAY_MS = 400;
+const SPEECH_CONFIRM_DELAY_MS = 250;
+
+let ws = null;
+let micStream = null;
+let captureCtx = null;
+let captureSource = null;
+let captureProcessor = null;
+let playbackCtx = null;
+let nextPlayTime = 0;
+let activeSources = [];
+let isCallActive = false;
+let isSpeakingSignaled = false; // one 'speaking' event per AI turn, not per chunk
+let userSpeaking = false;
+let pauseTimer = null;
+let speechTimer = null;
+
+// --- Dart bridge ---
+
+let bridgeReady = false;
+let pendingEvents = [];
+
+window.addEventListener('flutterInAppWebViewPlatformReady', () => {
+  bridgeReady = true;
+  pendingEvents.forEach((e) => window.flutter_inappwebview.callHandler('onEvent', e));
+  pendingEvents = [];
+});
+
+function emit(event) {
+  if (bridgeReady) {
+    window.flutter_inappwebview.callHandler('onEvent', event);
+  } else {
+    pendingEvents.push(event);
+  }
+}
+
+// --- outgoing: mic capture, downsample to 16k PCM16, base64, send ---
+
+function floatTo16kPcm16Base64(float32In, inputRate) {
+  const ratio = inputRate / 16000;
+  const outLength = Math.floor(float32In.length / ratio);
+  const pcm16 = new Int16Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    const srcIndex = Math.floor(i * ratio);
+    let s = Math.max(-1, Math.min(1, float32In[srcIndex]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  const bytes = new Uint8Array(pcm16.buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+// Peak dBFS of a Float32 chunk (-1..1 range); mirrors _peakDbfsOf in
+// voice_session_service.dart closely enough for the same thresholds to apply.
+function peakDbfsOf(float32In) {
+  let peak = 0;
+  for (let i = 0; i < float32In.length; i++) {
+    const abs = Math.abs(float32In[i]);
+    if (abs > peak) peak = abs;
+  }
+  if (peak === 0) return -160;
+  return 20 * Math.log10(peak);
+}
+
+function handleAmplitude(level) {
+  if (level > SPEECH_THRESHOLD_DB) {
+    if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
+    if (!userSpeaking && !speechTimer) {
+      speechTimer = setTimeout(() => {
+        speechTimer = null;
+        userSpeaking = true;
+        emit({ type: 'user_speaking' });
+      }, SPEECH_CONFIRM_DELAY_MS);
+    }
+    return;
+  }
+
+  if (level > SILENCE_THRESHOLD_DB) return; // dead zone
+
+  if (speechTimer) { clearTimeout(speechTimer); speechTimer = null; }
+
+  if (userSpeaking && !pauseTimer) {
+    pauseTimer = setTimeout(() => {
+      pauseTimer = null;
+      userSpeaking = false;
+      emit({ type: 'user_paused' });
+    }, PAUSE_DELAY_MS);
+  }
+}
+
+async function startCapture() {
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+    },
+  });
+
+  captureCtx = new (window.AudioContext || window.webkitAudioContext)();
+  captureSource = captureCtx.createMediaStreamSource(micStream);
+  captureProcessor = captureCtx.createScriptProcessor(4096, 1, 1);
+  captureSource.connect(captureProcessor);
+  captureProcessor.connect(captureCtx.destination);
+
+  captureProcessor.onaudioprocess = (event) => {
+    if (!isCallActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const input = event.inputBuffer.getChannelData(0);
+    const data = floatTo16kPcm16Base64(input, captureCtx.sampleRate);
+    ws.send(JSON.stringify({ type: 'audio', data, mimeType: 'audio/pcm;rate=16000' }));
+    handleAmplitude(peakDbfsOf(input));
+  };
+}
+
+function stopCapture() {
+  if (captureProcessor) { captureProcessor.disconnect(); captureProcessor.onaudioprocess = null; }
+  if (captureSource) captureSource.disconnect();
+  if (captureCtx) captureCtx.close();
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  captureProcessor = captureSource = captureCtx = micStream = null;
+  if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
+  if (speechTimer) { clearTimeout(speechTimer); speechTimer = null; }
+  userSpeaking = false;
+}
+
+// --- incoming: base64 PCM16 -> scheduled playback ---
+
+function playChunk(base64Data, rate) {
+  if (!playbackCtx) playbackCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const pcm16 = new Int16Array(bytes.buffer);
+  const float32 = new Float32Array(pcm16.length);
+  for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 0x8000;
+
+  const buffer = playbackCtx.createBuffer(1, float32.length, rate);
+  buffer.copyToChannel(float32, 0);
+
+  const source = playbackCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(playbackCtx.destination);
+
+  const now = playbackCtx.currentTime;
+  if (nextPlayTime < now) nextPlayTime = now;
+  source.start(nextPlayTime);
+  nextPlayTime += buffer.duration;
+
+  activeSources.push(source);
+  source.onended = () => {
+    activeSources = activeSources.filter((s) => s !== source);
+    if (isPlaybackIdle()) emit({ type: 'playback_idle' });
+  };
+
+  if (!isSpeakingSignaled) {
+    isSpeakingSignaled = true;
+    emit({ type: 'speaking' });
+  }
+}
+
+// Queried from Dart before waiting for a queued closing remark to finish
+// playing (see WebviewVoiceBridge.waitUntilIdle) — checked synchronously so
+// a call arriving after playback already finished doesn't wait forever for
+// an 'playback_idle' event that already happened.
+function isPlaybackIdle() {
+  return activeSources.length === 0 &&
+      (!playbackCtx || nextPlayTime <= playbackCtx.currentTime);
+}
+
+function interruptPlayback() {
+  activeSources.forEach((s) => { try { s.stop(); } catch (e) {} });
+  activeSources = [];
+  if (playbackCtx) nextPlayTime = playbackCtx.currentTime;
+}
+
+// --- call lifecycle, driven from Dart ---
+
+async function startCall(mode) {
+  try {
+    await startCapture();
+  } catch (err) {
+    emit({ type: 'connect_error', message: 'getUserMedia: ' + err.message });
+    return;
+  }
+
+  isSpeakingSignaled = false;
+  ws = new WebSocket(`${BACKEND_WS_URL}?mode=${mode}`);
+
+  ws.onopen = () => {
+    isCallActive = true;
+    emit({ type: 'connected' });
+  };
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === 'audio') {
+      const rate = parseInt((msg.mimeType || '').match(/rate=(\d+)/)?.[1] || '24000', 10);
+      playChunk(msg.data, rate);
+    } else if (msg.type === 'interrupted') {
+      isSpeakingSignaled = false;
+      interruptPlayback();
+      emit({ type: 'interrupted' });
+    } else if (msg.type === 'turn_complete') {
+      isSpeakingSignaled = false;
+      emit({ type: 'turn_complete' });
+    } else if (msg.type === 'tool_call') {
+      emit({ type: 'tool_call', functionCalls: msg.functionCalls });
+    }
+  };
+
+  ws.onerror = () => {
+    if (!isCallActive) emit({ type: 'connect_error', message: 'WebSocket 連線失敗' });
+  };
+
+  ws.onclose = () => {
+    const wasActive = isCallActive;
+    isCallActive = false;
+    stopCapture();
+    if (wasActive) emit({ type: 'disconnected' });
+  };
+}
+
+function endCall() {
+  isCallActive = false;
+  if (ws) { ws.close(); ws = null; }
+  stopCapture();
+  interruptPlayback();
+}
+</script>
+</body>
+</html>

@@ -11,19 +11,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Two-part system, `frontend/` (Flutter) and `backend/` (Node.js), communicating over WebSocket. The backend exists solely to keep the Gemini API key off the client and to proxy the Gemini Live session — it holds no other business logic.
 
 ```
-Flutter (record → PCM/Base64) --WebSocket--> Node.js proxy --Gemini Live API (@google/genai)--> Gemini 2.5 Flash
-Flutter (audio playback)      <--WebSocket-- Node.js proxy <--audio / tool_call-------------------
+Flutter (hidden WebView: getUserMedia → PCM/Base64) --WebSocket--> Node.js proxy --Gemini Live API (@google/genai)--> Gemini 2.5 Flash
+Flutter (hidden WebView: Web Audio playback)        <--WebSocket-- Node.js proxy <--audio / tool_call-------------------
 ```
 
 - `backend/src/server.js` — HTTP server (`/health`) + `WebSocketServer`. On each client connection, opens one Gemini Live session via `bridgeClientToGemini`. Client messages of `{"type":"audio","data":"<base64>","mimeType":"audio/pcm;rate=16000"}` are forwarded to Gemini via `sendRealtimeInput`. Closing the client socket closes the Gemini session (1:1 lifecycle).
-- `backend/src/geminiLive.js` — Wraps `ai.live.connect()` (model: `gemini-2.5-flash-native-audio-latest` — see `MODEL_NAME`; other model IDs from the spec/SDK docs have been tried and don't work with the current key). `forwardGeminiMessageToClient` translates Gemini's `serverContent`/`toolCall` messages into the client-facing protocol:
+- `backend/src/geminiLive.js` — Wraps `ai.live.connect()` (model: `gemini-3.1-flash-live-preview` — see `MODEL_NAME`). Config differs by `mode`: 訪談模式 uses `INTERVIEW_SYSTEM_PROMPT` + the `generate_report` tool; 專業問答模式 uses `QA_SYSTEM_PROMPT` + a `search_knowledge_base` tool that queries the 台大醫院心臟移植術後護理指引 RAG knowledge base (`backend/src/ragService.js` — see `doc/RAG串接.md`) and feeds the result back via `sendToolResponse` without ever reaching the client. `forwardGeminiMessageToClient` translates Gemini's `serverContent`/`toolCall` messages into the client-facing protocol:
   - `{"type":"audio","data":...,"mimeType":...}` — audio chunk out
+  - `{"type":"interrupted"}` — barge-in
   - `{"type":"turn_complete"}`
-  - `{"type":"tool_call","functionCalls":[...]}`
-  - `systemInstruction` and `tools` (the `generate_report` function schema from the spec, §伍) are **not yet wired into `config`** — this is Phase 4 work, currently a placeholder.
-- `frontend/lib/main.dart` — Home screen: Avatar placeholder, three mode buttons (訪談模式 / 專業問答模式 / 報表輸出), start/end-call button. `_selectInterviewMode`/`_selectQaMode` are still no-ops (Phase 4 will make them choose which config to send on connect).
-- `frontend/lib/screens/report_history_screen.dart`, `report_detail_screen.dart` — history list + detail/notes UI, currently driven by fake data (`frontend/lib/data/fake_reports.dart`) and an in-memory `ReportRecord.note` (`frontend/lib/models/report_record.dart`). Nothing is persisted yet — Phase 4 replaces this with `hive`.
-- No audio capture/playback, avatar animation, or persistence code exists yet (`record`, `flutter_sound`, `hive` are planned but not installed — see TODO.md Phase 3/4).
+  - `{"type":"tool_call","functionCalls":[...]}` — only for `generate_report`; `search_knowledge_base` calls stay server-side.
+- `frontend/lib/main.dart` — Home screen: Avatar (idle/listening/thinking/speaking states driven by call events and a local mic-amplitude heuristic, see `webview_voice_bridge.dart`), 訪談模式／專業問答模式 mode buttons (`_selectInterviewMode`/`_selectQaMode` set `_selectedMode`, sent to the backend as `mode` on connect), 報表輸出 button, start/end-call button. Once `generate_report` fires and the model's closing remark finishes playing, saves a `ReportRecord` via `ReportStore` and opens `ReportDetailScreen`.
+- `frontend/lib/screens/report_history_screen.dart`, `report_detail_screen.dart` — history list + detail/notes UI, backed by `frontend/lib/services/report_store.dart` (Hive-persisted `ReportRecord`s — see `frontend/lib/models/report_record.dart`); notes are saved back to the same box on edit.
+- `frontend/lib/services/webview_voice_bridge.dart` + `frontend/assets/voice_webview/index.html` — mic capture, playback, and the WebSocket link to the backend all run inside a hidden `flutter_inappwebview` `InAppWebView`, not via native Flutter audio plugins. Reason: `record` (mic) + `flutter_sound` (speaker) each opened their own native audio session, so the OS's echo canceller had no reference signal for what was being played — speaker output leaked into the mic and Gemini's VAD mistook it for the user barging in, causing repeated self-interruption. A browser's `getUserMedia({echoCancellation:true})` and Web Audio playback share one pipeline, so the reference signal is there for free. `record` is still a dependency, but only for `AudioRecorder().hasPermission()`'s side effect of triggering Android's OS-level `RECORD_AUDIO` runtime permission dialog — `InAppWebView.onPermissionRequest` only grants the in-page JS permission, not the OS one. Android also needs `MODIFY_AUDIO_SETTINGS` in `AndroidManifest.xml` for Chromium to select a recording device.
 
 ### Report format contract
 

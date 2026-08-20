@@ -10,6 +10,7 @@ frontend/.flutter-plugins-dependencies
 frontend/.packages
 frontend/build/
 frontend/android/.gradle/
+frontend/android/build/
 frontend/android/local.properties
 frontend/ios/Pods/
 frontend/ios/.symlinks/

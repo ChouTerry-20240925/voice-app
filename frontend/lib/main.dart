@@ -6,9 +6,8 @@ import 'package:flutter/material.dart';
 import 'models/report_record.dart';
 import 'screens/report_detail_screen.dart';
 import 'screens/report_history_screen.dart';
-import 'services/audio_playback_service.dart';
 import 'services/report_store.dart';
-import 'services/voice_session_service.dart';
+import 'services/webview_voice_bridge.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,7 +43,13 @@ enum AvatarExpression { neutral, joy, anger, sorrow, happy }
 enum ConversationMode { interview, qa }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.voiceBridge});
+
+  /// Overridable for widget tests, which have no real WebView platform to
+  /// back an actual [WebviewVoiceBridge] — production code always leaves
+  /// this null and gets the real thing (see _HomeScreenState._voiceBridge).
+  @visibleForTesting
+  final WebviewVoiceBridge? voiceBridge;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -66,16 +71,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // running until the model's closing remark actually finishes (see
   // onTurnComplete below) so it isn't cut off mid-sentence.
   ReportRecord? _pendingReport;
-  final _playback = AudioPlaybackService();
-  late final _voiceSession = VoiceSessionService(
-    onAudioChunk: (data, mimeType) {
-      _playback.enqueueChunk(data, mimeType);
-      _setAvatarState(AvatarState.speaking);
-    },
-    onInterrupted: () {
-      _playback.interrupt();
-      _setAvatarState(AvatarState.listening);
-    },
+  late final _voiceBridge = widget.voiceBridge ?? WebviewVoiceBridge(
+    onSpeaking: () => _setAvatarState(AvatarState.speaking),
+    onInterrupted: () => _setAvatarState(AvatarState.listening),
     onTurnComplete: () {
       _setAvatarState(AvatarState.listening);
       if (_pendingReport != null) {
@@ -95,10 +93,10 @@ class _HomeScreenState extends State<HomeScreen> {
         _handleUnexpectedDisconnect();
       }
     },
-    // Local mic-amplitude heuristic only (see VoiceSessionService) — guard
-    // against the authoritative server states (speaking/idle) so a noisy
-    // reading can't override them; true barge-in still goes through
-    // onInterrupted above.
+    // Local mic-amplitude heuristic (computed in the WebView's JS, see
+    // assets/voice_webview/index.html) — guard against the authoritative
+    // server states (speaking/idle) so a noisy reading can't override them;
+    // true barge-in still goes through onInterrupted above.
     onUserPaused: () {
       if (_avatarState == AvatarState.listening) {
         _setAvatarState(AvatarState.thinking);
@@ -128,15 +126,13 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _coldStartHintTimer?.cancel();
-    _voiceSession.dispose();
-    _playback.stop();
+    _voiceBridge.stop();
     super.dispose();
   }
 
   Future<void> _toggleCall() async {
     if (_isCallActive) {
-      await _voiceSession.stop();
-      await _playback.stop();
+      await _voiceBridge.stop();
       setState(() {
         _isCallActive = false;
         _avatarState = AvatarState.idle;
@@ -157,13 +153,9 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
-      // Start the mic/WebSocket session before opening the player: if mic
-      // permission is denied or the connection fails, there's no point
-      // spinning up playback for audio that will never arrive.
-      await _voiceSession.start(
+      await _voiceBridge.start(
         mode: _selectedMode == ConversationMode.qa ? 'qa' : 'interview',
       );
-      await _playback.start();
       _coldStartHintTimer?.cancel();
       if (!mounted) return;
       setState(() {
@@ -177,31 +169,29 @@ class _HomeScreenState extends State<HomeScreen> {
       // _avatarState never left idle if we get here — start() failed
       // before the success branch's setState ran.
       _coldStartHintTimer?.cancel();
-      await _voiceSession.stop();
-      await _playback.stop();
+      await _voiceBridge.stop();
       if (!mounted) return;
       setState(() {
         _isConnecting = false;
         _showColdStartHint = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('無法開始通話：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('無法開始通話：$e')));
     }
   }
 
   Future<void> _handleUnexpectedDisconnect() async {
     if (!_isCallActive) return;
-    await _voiceSession.stop();
-    await _playback.stop();
+    await _voiceBridge.stop();
     if (!mounted) return;
     setState(() {
       _isCallActive = false;
       _avatarState = AvatarState.idle;
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('連線中斷，請重新開始通話')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('連線中斷，請重新開始通話')));
   }
 
   Future<void> _handleToolCall(List<dynamic> functionCalls) async {
@@ -247,10 +237,9 @@ class _HomeScreenState extends State<HomeScreen> {
     // Audio for the closing remark may still be queued/playing even though
     // every message for it has already arrived — wait for it to actually
     // finish rather than cutting it off.
-    await _playback.waitUntilIdle();
+    await _voiceBridge.waitUntilIdle();
 
-    await _voiceSession.stop();
-    await _playback.stop();
+    await _voiceBridge.stop();
     if (!mounted) return;
     setState(() {
       _isCallActive = false;
@@ -293,106 +282,114 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openReportHistory() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ReportHistoryScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const ReportHistoryScreen()));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: Stack(
-                children: [
-                  Center(
-                    child: _AvatarView(
-                      state: _avatarState,
-                      expression: _currentExpression,
-                    ),
-                  ),
-                  Positioned(
-                    right: 16,
-                    top: 0,
-                    bottom: 0,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        _ModeButton(
-                          icon: Icons.psychology_alt_outlined,
-                          label: '訪談模式',
-                          selected: _selectedMode == ConversationMode.interview,
-                          onPressed: _selectInterviewMode,
-                        ),
-                        const SizedBox(height: 24),
-                        _ModeButton(
-                          icon: Icons.chat_bubble_outline,
-                          label: '專業問答模式',
-                          selected: _selectedMode == ConversationMode.qa,
-                          onPressed: _selectQaMode,
-                        ),
-                        const Spacer(),
-                        _ModeButton(
-                          icon: Icons.description_outlined,
-                          label: '報表輸出',
-                          selected: false,
-                          onPressed: _openReportHistory,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              child: Column(
-                children: [
-                  if (_isConnecting && _showColdStartHint)
-                    const Padding(
-                      padding: EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        '後端可能正在喚醒中，請稍候（最長約 50 秒）',
-                        style: TextStyle(fontSize: 13, color: Colors.grey),
-                      ),
-                    ),
-                  SizedBox(
-                    width: 200,
-                    height: 64,
-                    child: ElevatedButton(
-                      onPressed: _isConnecting ? null : _toggleCall,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _isCallActive
-                            ? Colors.redAccent
-                            : Colors.teal,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(32),
+    return Stack(
+      children: [
+        Scaffold(
+          body: SafeArea(
+            child: Column(
+              children: [
+                Expanded(
+                  child: Stack(
+                    children: [
+                      Center(
+                        child: _AvatarView(
+                          state: _avatarState,
+                          expression: _currentExpression,
                         ),
                       ),
-                      child: _isConnecting
-                          ? const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 3,
-                                color: Colors.white,
-                              ),
-                            )
-                          : Text(
-                              _isCallActive ? '結束通話' : '開始問答',
-                              style: const TextStyle(fontSize: 18),
+                      Positioned(
+                        right: 16,
+                        top: 0,
+                        bottom: 0,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _ModeButton(
+                              icon: Icons.psychology_alt_outlined,
+                              label: '訪談模式',
+                              selected:
+                                  _selectedMode == ConversationMode.interview,
+                              onPressed: _selectInterviewMode,
                             ),
-                    ),
+                            const SizedBox(height: 24),
+                            _ModeButton(
+                              icon: Icons.chat_bubble_outline,
+                              label: '專業問答模式',
+                              selected: _selectedMode == ConversationMode.qa,
+                              onPressed: _selectQaMode,
+                            ),
+                            const Spacer(),
+                            _ModeButton(
+                              icon: Icons.description_outlined,
+                              label: '報表輸出',
+                              selected: false,
+                              onPressed: _openReportHistory,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Column(
+                    children: [
+                      if (_isConnecting && _showColdStartHint)
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            '後端可能正在喚醒中，請稍候（最長約 50 秒）',
+                            style: TextStyle(fontSize: 13, color: Colors.grey),
+                          ),
+                        ),
+                      SizedBox(
+                        width: 200,
+                        height: 64,
+                        child: ElevatedButton(
+                          onPressed: _isConnecting ? null : _toggleCall,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _isCallActive
+                                ? Colors.redAccent
+                                : Colors.teal,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(32),
+                            ),
+                          ),
+                          child: _isConnecting
+                              ? const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 3,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : Text(
+                                  _isCallActive ? '結束通話' : '開始問答',
+                                  style: const TextStyle(fontSize: 18),
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+        // Hidden — owns mic capture + playback via the browser's own audio
+        // pipeline (see WebviewVoiceBridge). No visible UI of its own.
+        _voiceBridge.buildHiddenWebView(),
+      ],
     );
   }
 }
@@ -413,14 +410,17 @@ class _AvatarViewState extends State<_AvatarView>
     vsync: this,
     duration: _durationFor(widget.state),
   );
-  late final _curve = CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
+  late final _curve = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeInOut,
+  );
 
   static Duration _durationFor(AvatarState state) => switch (state) {
-        AvatarState.idle => const Duration(milliseconds: 1800),
-        AvatarState.listening => const Duration(milliseconds: 1100),
-        AvatarState.thinking => const Duration(milliseconds: 1000),
-        AvatarState.speaking => const Duration(milliseconds: 320),
-      };
+    AvatarState.idle => const Duration(milliseconds: 1800),
+    AvatarState.listening => const Duration(milliseconds: 1100),
+    AvatarState.thinking => const Duration(milliseconds: 1000),
+    AvatarState.speaking => const Duration(milliseconds: 320),
+  };
 
   @override
   void initState() {
@@ -465,21 +465,21 @@ class _AvatarViewState extends State<_AvatarView>
     final colorScheme = Theme.of(context).colorScheme;
     final (Color bg, Color fg) = switch (widget.state) {
       AvatarState.idle => (
-          colorScheme.primaryContainer,
-          colorScheme.onPrimaryContainer,
-        ),
+        colorScheme.primaryContainer,
+        colorScheme.onPrimaryContainer,
+      ),
       AvatarState.listening => (
-          colorScheme.tertiaryContainer,
-          colorScheme.onTertiaryContainer,
-        ),
+        colorScheme.tertiaryContainer,
+        colorScheme.onTertiaryContainer,
+      ),
       AvatarState.thinking => (
-          colorScheme.surfaceContainerHighest,
-          colorScheme.onSurfaceVariant,
-        ),
+        colorScheme.surfaceContainerHighest,
+        colorScheme.onSurfaceVariant,
+      ),
       AvatarState.speaking => (
-          colorScheme.secondaryContainer,
-          colorScheme.onSecondaryContainer,
-        ),
+        colorScheme.secondaryContainer,
+        colorScheme.onSecondaryContainer,
+      ),
     };
 
     return AnimatedContainer(
