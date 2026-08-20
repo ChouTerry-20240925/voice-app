@@ -5,7 +5,7 @@
 ## 功能現況
 
 - **訪談模式**：Gemini 依 System Prompt 主動開場問候，透過自然對話（不提及「量表」「測驗」等字眼）蒐集睡眠困難、焦慮不安、易怒情緒、低落沮喪、自信心低落、負面念頭六個面向，完成後自動呼叫 `generate_report` 工具產出報表並結束通話
-- **專業問答模式**：自由心理衛生衛教問答，被動等待使用者開口，不產生報表；超出衛教範圍（如具體醫療診斷、藥物建議）會溫和轉介專業協助。掛有 `search_knowledge_base` 工具，可即時查詢台大醫院心臟移植手術後護理指引知識庫（RAG，見下方「RAG 護理知識庫問答」一節），回答時引用標準指引段落。訪談模式不受影響，不掛此工具
+- **專業問答模式**：自由心理衛生衛教問答，被動等待使用者開口，不產生報表；超出衛教範圍（如具體醫療診斷、藥物建議）會溫和轉介專業協助。掛有 `search_knowledge_base` 工具，可即時查詢手術後護理指引知識庫（RAG，見下方「RAG 護理知識庫問答」一節），回答時引用標準指引段落。訪談模式不受影響，不掛此工具
 - **報表產生與本地持久化**：報表（含量表分數、逐題摘要、整體評估）透過 Hive 寫入本機資料庫，可在「歷史報表」清單查閱、加註備註，重開 App 資料仍在
 - **語音互動細節**：即時雙向語音串流、Barge-in（使用者可隨時打斷模型講話）、Avatar 依對話狀態呈現待機／傾聽／思考中／說話四種姿態動畫（思考中動畫用麥克風音量做本地判斷，純 UI 回饋，不影響實際送給 Gemini 的音訊）
 - **錯誤處理**：麥克風權限被拒、連線中（含 Render 免費方案冷啟動提示）、連線意外斷開等邊界情況都有對應畫面回饋
@@ -55,7 +55,7 @@ session.sendToolResponse() 把段落文字回傳給 Gemini
 Gemini 引用指引內容，組織語音回覆
 ```
 
-- **知識庫內容**：台大醫院心臟移植手術後護理指引，來源語料在 `台大語料整理後/整理後/`（適用對象、例外、護理問題、護理過程各細項、利用資源、參考資料，共 9 個章節、原始文字約 10KB），透過 `ingest_to_supabase.py` 切塊後寫入 Supabase
+- **知識庫內容**：心臟移植手術後護理指引，透過 `ingest_to_supabase.py` 切塊後寫入 Supabase
 - **資料表／RPC**：Supabase `ntuh_nursing_documents`（`pgvector` embedding 欄位）+ `match_ntuh_documents` RPC，`match_threshold=0.25`、`match_count=3`（見 `doc/RAG串接.md`）
 - **查詢端**：`backend/src/ragService.js`，`SUPABASE_ANON_KEY`（唯讀，RLS 只開放 SELECT）+ `OPENAI_API_KEY`
 - **已知限制**：語料量小（9 個章節），`match_threshold`/`match_count` 為初始預設值，尚未依實際問答測試調校；語料若持續擴充，需留意 chunk 品質與 threshold 是否仍適用
@@ -73,7 +73,7 @@ Gemini 引用指引內容，組織語音回覆
 | Gemini SDK | 官方 `@google/genai` |
 | Gemini Live 模型 | `gemini-3.1-flash-live-preview`（音色固定為 `Zephyr`，避免模型版本切換時聲線跟著變） |
 | 向量資料庫（RAG） | Supabase PostgreSQL + `pgvector`（`ntuh_nursing_documents` 表、`match_ntuh_documents` RPC） |
-| Embedding 模型（RAG） | OpenAI `text-embedding-3-small`（1536 維度，查詢端 `backend/src/ragService.js`、批次寫入端 `台大語料整理後/整理後/ingest_to_supabase.py`） |
+| Embedding 模型（RAG） | OpenAI `text-embedding-3-small`（1536 維度，查詢端 `backend/src/ragService.js`、批次寫入端 `ingest_to_supabase.py`） |
 
 ## 專案結構
 
