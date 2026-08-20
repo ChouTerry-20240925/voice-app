@@ -1,4 +1,5 @@
 const { GoogleGenAI, Modality, Type } = require('@google/genai');
+const { searchKnowledgeBase } = require('./ragService');
 
 const MODEL_NAME = 'gemini-3.1-flash-live-preview';
 
@@ -48,7 +49,13 @@ const QA_SYSTEM_PROMPT = `你是一位溫暖、專業的心理健康衛教語音
 【對話規則】
 - 這個模式不需要蒐集固定題項、不打分數，也不會產生報表，單純自然對話即可。
 - 等使用者先開口提問或分享，你再回應；不用主動開場問候。
-- 回覆簡潔口語、避免生硬的醫療術語，必要時可以用生活化的比喻說明。`;
+- 回覆簡潔口語、避免生硬的醫療術語，必要時可以用生活化的比喻說明。
+
+【護理指引查詢規則】
+- 你擁有 search_knowledge_base 工具，可查詢台大醫院心臟移植手術後標準臨床護理指引。
+- 當使用者詢問任何術後照護、用藥監測、排斥徵兆、感染防護、飲食活動或出院衛教時，務必主動調用此工具。
+- 回答時請明確引用指引條目（如：依據【排斥控制】第 3 點...），重要數據（如 CVP、體溫 > 37.5℃）需醒目標明。
+- 呼叫工具時無需用語音告知使用者「正在查詢」，自然等待查詢結果回傳後再開口回答。`;
 
 const GENERATE_REPORT_TOOL = {
   functionDeclarations: [
@@ -66,6 +73,28 @@ const GENERATE_REPORT_TOOL = {
           result_analysis: { type: Type.STRING },
         },
         required: ['report_content', 'total_score', 'result_analysis'],
+      },
+    },
+  ],
+};
+
+const SEARCH_KNOWLEDGE_BASE_TOOL = {
+  functionDeclarations: [
+    {
+      name: 'search_knowledge_base',
+      description:
+        '當使用者詢問心臟移植術後照護、臨床護理問題、排斥與感染控制、呼吸器照護、體液監測或出院衛教時，' +
+        '呼叫此工具查詢台大醫院標準護理指引資料庫。' +
+        '請將使用者的問題精簡成繁體中文搜尋關鍵字再傳入。',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          query: {
+            type: Type.STRING,
+            description: '搜尋關鍵字，例如：「心臟移植急性排斥症狀」「術後飲食限制」「心包填塞徵兆」',
+          },
+        },
+        required: ['query'],
       },
     },
   ],
@@ -128,10 +157,12 @@ async function bridgeClientToGemini(clientSocket, mode = 'interview') {
       },
     },
   };
-  // QA 模式是自由問答衛教，不蒐集固定題項也不產生報表，所以不掛
-  // generate_report 這個 tool。
+  // 訪談模式掛 generate_report 產出 BSRS-5 報表；QA 模式不蒐集固定題項、
+  // 不產報表，改掛 search_knowledge_base 查詢護理指引知識庫。
   if (isInterview) {
     config.tools = [GENERATE_REPORT_TOOL];
+  } else {
+    config.tools = [SEARCH_KNOWLEDGE_BASE_TOOL];
   }
 
   session = await ai.live.connect({
@@ -223,25 +254,47 @@ function forwardGeminiMessageToClient(message, clientSocket, session) {
   }
 
   if (message.toolCall?.functionCalls) {
-    clientSocket.send(
-      JSON.stringify({
-        type: 'tool_call',
-        functionCalls: message.toolCall.functionCalls,
-      })
-    );
+    for (const call of message.toolCall.functionCalls) {
+      if (call.name === 'search_knowledge_base') {
+        // RAG 查詢是伺服器內部行為，不轉給前端；查完再非同步把結果回傳給
+        // Gemini（不能同步等待，會卡住這個 onmessage callback）。
+        const query = call.args?.query || '';
+        console.log(`[RAG] Tool call 收到查詢: "${query}"`);
 
-    // Acknowledge the call so Gemini isn't left waiting for a response it
-    // never gets — without this the session errors out and force-closes
-    // once the model tries to continue after calling generate_report.
-    // generate_report only hands data to the client; there's nothing for
-    // the server to actually execute, so the response is a bare ack.
-    session.sendToolResponse({
-      functionResponses: message.toolCall.functionCalls.map((call) => ({
-        id: call.id,
-        name: call.name,
-        response: { output: { success: true } },
-      })),
-    });
+        searchKnowledgeBase(query)
+          .then(({ context, found }) => {
+            const responseText = found
+              ? `以下是院內標準護理指引中與「${query}」相關的內容，請依此內容向使用者詳細回答並標明依據章節：\n\n${context}`
+              : `護理指引中未找到與「${query}」直接相關的記載，請基於一般醫療衛教原則回答，並提醒使用者應依主治醫師醫囑為準。`;
+
+            session.sendToolResponse({
+              functionResponses: [
+                { id: call.id, name: call.name, response: { output: { result: responseText } } },
+              ],
+            });
+            console.log(`[RAG] Tool response 已送回 Gemini, found=${found}`);
+          })
+          .catch((err) => {
+            console.error('[RAG] Tool response 失敗:', err.message);
+            session.sendToolResponse({
+              functionResponses: [
+                {
+                  id: call.id,
+                  name: call.name,
+                  response: { output: { result: '指引資料庫連線逾時，請先根據一般臨床衛教原則回答。' } },
+                },
+              ],
+            });
+          });
+      } else {
+        // generate_report：轉給前端顯示報表，伺服器端無需實際執行，回傳
+        // bare ack 讓 Gemini 不會卡在等待回應（否則 session 會出錯關閉）。
+        clientSocket.send(JSON.stringify({ type: 'tool_call', functionCalls: [call] }));
+        session.sendToolResponse({
+          functionResponses: [{ id: call.id, name: call.name, response: { output: { success: true } } }],
+        });
+      }
+    }
   }
 }
 
